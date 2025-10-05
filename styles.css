@@ -1,0 +1,51 @@
+:root {
+  color-scheme: light dark;
+  font-family: 'Press Start 2P', 'Courier New', monospace;
+}
+
+@font-face {
+  font-family: 'Press Start 2P';
+  font-style: normal;
+  font-weight: 400;
+  src: local('Press Start 2P'),
+    url('https://fonts.gstatic.com/s/pressstart2p/v12/e3t4euO8KEJ_w0H0T6G6KThN.woff2') format('woff2');
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at top, #5b728a, #1e2630);
+  color: #fff1cf;
+}
+
+.game-wrapper {
+  position: relative;
+  box-shadow: 0 0 0 4px #1b1b23, 0 1rem 2rem rgba(0, 0, 0, 0.6);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+#gameCanvas {
+  width: 90vw;
+  max-width: 640px;
+  image-rendering: pixelated;
+  background: #000;
+  touch-action: none;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: clamp(12px, 2.5vw, 18px);
+  padding: 1.5rem;
+  pointer-events: none;
+  color: #fff1cf;
+  text-shadow: 0 2px 0 #000, 0 -2px 0 #000;
+}
