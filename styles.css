@@ -1,0 +1,70 @@
+:root {
+  color-scheme: light dark;
+  font-family: 'Press Start 2P', 'Courier New', monospace;
+}
+
+@font-face {
+  font-family: 'Press Start 2P';
+  font-style: normal;
+  font-weight: 400;
+  src: local('Press Start 2P'),
+    url('https://fonts.gstatic.com/s/pressstart2p/v12/e3t4euO8KEJ_w0H0T6G6KThN.woff2') format('woff2');
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  background: radial-gradient(circle at top, #394d6b 0%, #10131d 65%, #07080d 100%);
+  color: #f4f0da;
+  overscroll-behavior: none;
+}
+
+#game-root {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(8px, 2vw, 24px);
+}
+
+canvas {
+  width: min(92vw, 960px);
+  height: auto;
+  max-height: 96vh;
+  image-rendering: pixelated;
+  border-radius: 18px;
+  box-shadow: 0 0 0 6px #08090f, 0 1.5rem 3rem rgba(0, 0, 0, 0.65);
+  background: #000;
+  touch-action: none;
+}
+
+.screen-reader-help {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+.phaser-overlay-text {
+  position: absolute;
+  left: 50%;
+  top: 12%;
+  transform: translateX(-50%);
+  font-size: clamp(16px, 2.6vw, 28px);
+  text-align: center;
+  color: #fff8d6;
+  text-shadow: 0 3px 0 #1a1426, 0 -3px 0 #1a1426, 3px 0 0 #1a1426, -3px 0 0 #1a1426;
+  pointer-events: none;
+}
