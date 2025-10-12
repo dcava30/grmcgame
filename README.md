@@ -72,6 +72,29 @@ To tie the GRMC memecoin into the game economy and create demand:
 - **Token sinks:** Offer limited-time events, kitchen themes, or premium levels that consume GRMC to enter, ensuring ongoing token
   utility.
 
+### Wallet-connected leaderboard flow
+
+1. Add a persistent **Connect Wallet** button to the HTML overlay so desktop and mobile players can authenticate with Phantom,
+   Solflare, Backpack, or other Solana wallets via the wallet adapter.
+2. When a run ends, request the player sign a nonce and submit `{ levelId, score, runDuration, signature }` to your backend. The
+   backend validates the signature against the player's public key before accepting the score.
+3. Store scores in a fast database for instant refresh, then optionally batch the day's top entries onto an on-chain Solana
+   program (PDA) so fans and tournament organizers can independently audit leaderboards.
+4. Expose both views in-game: an immediate feed pulled from the database and a "verified" tab that reads the PDA so players can
+   see which scores are anchored on-chain.
+
+### GRMC-powered extras
+
+- **Cosmetic storefront:** Serve a JSON catalog of skins/emotes priced in GRMC. When a player buys an item, have the backend build a
+  transaction transferring the token amount to the treasury for the player to sign.
+- **Premium events:** Gate special weekend levels or score-chasing tournaments behind a GRMC entry fee and distribute prizes via a
+  Solana program.
+- **Holder boosts:** Detect token balances when the wallet connects and grant in-game perks (e.g., +10% score multiplier) to wallets
+  meeting a threshold.
+
+See [`BLOCKCHAIN_INTEGRATION.md`](./BLOCKCHAIN_INTEGRATION.md) for a deeper blueprint that blends off-chain responsiveness with
+verifiable on-chain checkpoints, plus operational tips (custodial wallets, compliance, analytics) to keep the experience smooth.
+
 When adding wallet support, host over HTTPS, follow Solana best practices for signing/transaction handling, and communicate clearly how
 player data and tokens are used. Pair the token integration with marketing beats (weekly tournaments, collaboration drops) to keep
 interest high.
