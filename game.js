@@ -1,12 +1,22 @@
 (() => {
   const GAME_WIDTH = 960;
   const GAME_HEIGHT = 540;
-  const LEVEL_MIN_SECONDS = 180;
-  const LEVEL_MAX_SECONDS = 300;
   const MAX_ACTIVE_ORDERS = 4;
   const ORDER_SPAWN_DELAY = 14000;
   const ZOMBIE_CHAT_INTERVAL = 6000;
   const PLAYER_SPEED = 130;
+
+  const DIFFICULTY_POINTS = {
+    easy: 6,
+    medium: 10,
+    hard: 16,
+  };
+
+  const DIFFICULTY_LABELS = {
+    easy: 'Easy',
+    medium: 'Medium',
+    hard: 'Hard',
+  };
 
   const PALETTE = {
     floor: 0x3a4a5d,
@@ -71,32 +81,95 @@
 
   const RECIPES = [
     {
+      key: 'farmers-dawn-fry',
+      name: "Farmer's Dawn Fry",
+      difficulty: 'easy',
+      points: DIFFICULTY_POINTS.easy,
+      timeLimit: 90,
+      ingredients: ['egg', 'wheat'],
+      description: 'Sunrise skillet with fluffy toast and fried egg',
+    },
+    {
+      key: 'kelp-crisp-bowl',
+      name: 'Kelp Crisp Bowl',
+      difficulty: 'easy',
+      points: DIFFICULTY_POINTS.easy,
+      timeLimit: 85,
+      ingredients: ['kelp', 'mushroom'],
+      description: 'Cauldron-tossed kelp with seared mushrooms',
+    },
+    {
+      key: 'stonecutter-skillet',
+      name: 'Stonecutter Skillet',
+      difficulty: 'medium',
+      points: DIFFICULTY_POINTS.medium,
+      timeLimit: 95,
+      ingredients: ['potato', 'carrot', 'mushroom'],
+      description: 'Roasted garden veggies with a skillet char',
+    },
+    {
+      key: 'oceanic-kelp-roll',
+      name: 'Oceanic Kelp Roll',
+      difficulty: 'medium',
+      points: DIFFICULTY_POINTS.medium,
+      timeLimit: 100,
+      ingredients: ['fish', 'kelp', 'carrot'],
+      description: 'Crisp kelp wrap stuffed with sizzling cod',
+    },
+    {
       key: 'blocky-beef-stew',
-      name: "Blocky Beef Stew",
-      timeLimit: 80,
-      ingredients: ['beef', 'carrot', 'potato'],
+      name: 'Blocky Beef Stew',
+      difficulty: 'hard',
+      points: DIFFICULTY_POINTS.hard,
+      timeLimit: 110,
+      ingredients: ['beef', 'carrot', 'potato', 'mushroom'],
       description: 'Hearty cauldron stew packed with hearty veg',
     },
     {
       key: 'nether-skewer',
       name: 'Nether Skillet Skewer',
-      timeLimit: 70,
-      ingredients: ['beef', 'mushroom', 'wheat'],
-      description: 'Flame-kissed beef with mushroom crumble',
+      difficulty: 'hard',
+      points: DIFFICULTY_POINTS.hard,
+      timeLimit: 115,
+      ingredients: ['beef', 'fish', 'wheat', 'kelp'],
+      description: 'Flame-kissed surf and turf stacked on skewers',
+    },
+  ];
+
+  const LEVELS = [
+    {
+      id: 1,
+      name: 'Level 1: Tutorial Service',
+      duration: 180,
+      targetScore: 32,
+      introText: 'Tutorial: plate one easy, medium, and hard recipe to earn 32 points.',
+      orderInterval: 13000,
+      initialOrders: 3,
+      allowRandomOrders: false,
+      allowedDifficulties: ['easy', 'medium', 'hard'],
+      scriptedOrderKeys: ['farmers-dawn-fry', 'stonecutter-skillet', 'blocky-beef-stew'],
     },
     {
-      key: 'oceanic-kelp-roll',
-      name: 'Oceanic Kelp Roll',
-      timeLimit: 75,
-      ingredients: ['fish', 'kelp', 'carrot'],
-      description: 'Crisp kelp wrap stuffed with sizzling cod',
+      id: 2,
+      name: 'Level 2: Dinner Rush',
+      duration: 240,
+      targetScore: 100,
+      introText: 'Dinner rush! Keep dishes flying to reach 100 points.',
+      orderInterval: 11000,
+      initialOrders: 3,
+      allowRandomOrders: true,
+      allowedDifficulties: ['easy', 'medium', 'hard'],
     },
     {
-      key: 'farmer-breakfast',
-      name: "Farmer's Dawn Fry",
-      timeLimit: 65,
-      ingredients: ['egg', 'potato', 'wheat'],
-      description: 'Sunrise hash with fried egg topping',
+      id: 3,
+      name: 'Level 3: Chef Showdown',
+      duration: 240,
+      targetScore: 130,
+      introText: 'Finale: Gordon needs 130 points before the shift ends!',
+      orderInterval: 9000,
+      initialOrders: 3,
+      allowRandomOrders: true,
+      allowedDifficulties: ['easy', 'medium', 'hard'],
     },
   ];
 
@@ -220,14 +293,16 @@
     }
 
     create() {
-      this.scene.start('GameScene');
+      this.scene.start('GameScene', { levelIndex: 0 });
     }
   }
 
   class GameScene extends Phaser.Scene {
     constructor() {
       super('GameScene');
-      this.levelDuration = Phaser.Math.Between(LEVEL_MIN_SECONDS, LEVEL_MAX_SECONDS);
+      this.levelIndex = 0;
+      this.levelConfig = LEVELS[this.levelIndex];
+      this.levelDuration = this.levelConfig.duration;
       this.levelTimeRemaining = this.levelDuration;
       this.score = 0;
       this.completedOrders = 0;
@@ -239,8 +314,13 @@
       this.actionMeter = null;
     }
 
+    init(data) {
+      this.levelIndex = Phaser.Math.Clamp(data?.levelIndex ?? 0, 0, LEVELS.length - 1);
+      this.levelConfig = LEVELS[this.levelIndex];
+    }
+
     create() {
-      this.levelDuration = Phaser.Math.Between(LEVEL_MIN_SECONDS, LEVEL_MAX_SECONDS);
+      this.levelDuration = this.levelConfig.duration;
       this.levelTimeRemaining = this.levelDuration;
       this.score = 0;
       this.completedOrders = 0;
@@ -250,6 +330,14 @@
       this.playerTarget = null;
       this.currentAction = null;
       this.serviceOver = false;
+      this.levelTargetScore = this.levelConfig.targetScore ?? 0;
+      this.allowRandomOrders = this.levelConfig.allowRandomOrders !== false;
+      this.scriptedOrders = [];
+      if (this.levelConfig.scriptedOrderKeys) {
+        this.scriptedOrders = this.levelConfig.scriptedOrderKeys
+          .map((key) => RECIPES.find((recipe) => recipe.key === key))
+          .filter(Boolean);
+      }
 
       this.createWorld();
       this.createPlayer();
@@ -258,15 +346,33 @@
       this.createInputHandlers();
       this.createEvents();
 
-      this.time.addEvent({ delay: ORDER_SPAWN_DELAY, loop: true, callback: () => this.spawnOrder() });
-      for (let i = 0; i < 2; i += 1) {
-        this.time.delayedCall(2000 * (i + 1), () => this.spawnOrder());
-      }
+      const spawnDelay = this.levelConfig.orderInterval ?? ORDER_SPAWN_DELAY;
+      this.time.addEvent({ delay: spawnDelay, loop: true, callback: () => this.spawnOrder() });
+      this.spawnInitialOrders();
 
-      this.scene.launch('UIScene', { duration: this.levelDuration });
+      this.scene.launch('UIScene', {
+        duration: this.levelDuration,
+        levelIndex: this.levelIndex,
+        totalLevels: LEVELS.length,
+        levelName: this.levelConfig.name,
+        targetScore: this.levelTargetScore,
+        introText: this.levelConfig.introText,
+      });
       this.events.emit('score-changed', this.score);
       this.events.emit('inventory-changed', this.playerItem);
       this.events.emit('orders-updated', this.activeOrders);
+      this.events.emit('level-started', {
+        index: this.levelIndex,
+        targetScore: this.levelTargetScore,
+        duration: this.levelDuration,
+      });
+    }
+
+    spawnInitialOrders() {
+      const initialCount = this.levelConfig.initialOrders ?? 2;
+      for (let i = 0; i < initialCount; i += 1) {
+        this.time.delayedCall(600 * (i + 1), () => this.spawnOrder());
+      }
     }
 
     createWorld() {
@@ -732,11 +838,10 @@
     }
 
     completeOrder(order) {
-      const baseScore = 120 + order.recipe.ingredients.length * 15;
-      const bonus = Math.floor(order.timeRemaining * 1.5);
-      this.score += baseScore + bonus;
+      const points = order.recipe.points ?? DIFFICULTY_POINTS[order.recipe.difficulty] ?? 0;
+      this.score += points;
       this.completedOrders += 1;
-      this.showFloatingText(`+${baseScore + bonus}`, this.player.x, this.player.y - 80, '#b4ff9c');
+      this.showFloatingText(`+${points}`, this.player.x, this.player.y - 80, '#b4ff9c');
       this.events.emit('score-changed', this.score);
 
       Phaser.Utils.Array.Remove(this.activeOrders, order);
@@ -757,7 +862,21 @@
       if (this.activeOrders.length >= MAX_ACTIVE_ORDERS) {
         return;
       }
-      const recipe = pickRandom(RECIPES);
+      let recipe = null;
+      if (this.scriptedOrders.length > 0) {
+        recipe = this.scriptedOrders.shift();
+      } else if (this.allowRandomOrders) {
+        let pool = RECIPES;
+        if (this.levelConfig.allowedDifficulties && this.levelConfig.allowedDifficulties.length > 0) {
+          pool = RECIPES.filter((entry) => this.levelConfig.allowedDifficulties.includes(entry.difficulty));
+        }
+        if (pool.length > 0) {
+          recipe = pickRandom(pool);
+        }
+      }
+      if (!recipe) {
+        return;
+      }
       const order = {
         id: `order-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
         recipe,
@@ -857,11 +976,16 @@
       this.serviceOver = true;
       this.player.body.setVelocity(0, 0);
       this.time.removeAllEvents();
+      const passed = this.score >= this.levelTargetScore;
       this.events.emit('service-complete', {
         score: this.score,
         completed: this.completedOrders,
         failed: this.failedOrders,
         duration: this.levelDuration,
+        target: this.levelTargetScore,
+        passed,
+        levelIndex: this.levelIndex,
+        totalLevels: LEVELS.length,
       });
       this.showFloatingText('Service Complete!', GAME_WIDTH / 2, GAME_HEIGHT / 2 - 40, '#fff6cf');
     }
@@ -894,12 +1018,17 @@
 
     init(data) {
       this.levelDuration = data.duration;
+      this.levelIndex = data.levelIndex ?? 0;
+      this.totalLevels = data.totalLevels ?? LEVELS.length;
+      this.levelName = data.levelName ?? `Level ${this.levelIndex + 1}`;
+      this.targetScore = data.targetScore ?? 0;
+      this.introText = data.introText ?? '';
     }
 
     create() {
       this.gameScene = this.scene.get('GameScene');
 
-      this.scoreText = this.add.text(40, 24, 'Score: 0', {
+      this.scoreText = this.add.text(40, 24, `Score: 0/${this.targetScore}`, {
         fontFamily: 'Press Start 2P',
         fontSize: '16px',
         color: '#fff8d6',
@@ -915,6 +1044,17 @@
         strokeThickness: 6,
       }).setOrigin(0.5, 0).setDepth(20);
 
+      this.levelText = this.add.text(GAME_WIDTH / 2, 54, `${this.levelName} · Goal: ${this.targetScore} pts`, {
+        fontFamily: 'Press Start 2P',
+        fontSize: '12px',
+        color: '#fff8d6',
+        align: 'center',
+        stroke: '#111214',
+        strokeThickness: 6,
+      })
+        .setOrigin(0.5, 0)
+        .setDepth(20);
+
       this.inventoryText = this.add.text(GAME_WIDTH - 40, 24, 'Hands: Empty', {
         fontFamily: 'Press Start 2P',
         fontSize: '12px',
@@ -927,26 +1067,31 @@
       this.ordersPanel = this.add.container(40, 80);
       this.ordersPanel.setDepth(20);
 
-      this.overlayText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT * 0.2, 'Tap stations to prep Gordon\'s dishes!', {
-        fontFamily: 'Press Start 2P',
-        fontSize: '16px',
-        color: '#fff8d6',
-        align: 'center',
-        stroke: '#14151c',
-        strokeThickness: 6,
-        wordWrap: { width: GAME_WIDTH * 0.7 },
-      }).setOrigin(0.5).setDepth(25);
+      if (this.introText) {
+        this.overlayText = this.add
+          .text(GAME_WIDTH / 2, GAME_HEIGHT * 0.2, this.introText, {
+            fontFamily: 'Press Start 2P',
+            fontSize: '16px',
+            color: '#fff8d6',
+            align: 'center',
+            stroke: '#14151c',
+            strokeThickness: 6,
+            wordWrap: { width: GAME_WIDTH * 0.7 },
+          })
+          .setOrigin(0.5)
+          .setDepth(25);
 
-      this.time.delayedCall(4500, () => {
-        if (this.overlayText) {
-          this.tweens.add({
-            targets: this.overlayText,
-            alpha: { from: 1, to: 0 },
-            duration: 600,
-            onComplete: () => this.overlayText.destroy(),
-          });
-        }
-      });
+        this.time.delayedCall(5200, () => {
+          if (this.overlayText) {
+            this.tweens.add({
+              targets: this.overlayText,
+              alpha: { from: 1, to: 0 },
+              duration: 600,
+              onComplete: () => this.overlayText.destroy(),
+            });
+          }
+        });
+      }
 
       this.gameScene.events.on('score-changed', this.updateScore, this);
       this.gameScene.events.on('timer-tick', this.updateTimer, this);
@@ -971,7 +1116,7 @@
     }
 
     updateScore(score) {
-      this.scoreText.setText(`Score: ${score}`);
+      this.scoreText.setText(`Score: ${score}/${this.targetScore}`);
     }
 
     updateTimer(remaining) {
@@ -991,13 +1136,15 @@
 
     refreshOrders(orders) {
       this.ordersPanel.removeAll(true);
+      const cardHeight = 94;
+      const cardSpacing = 102;
       orders.forEach((order, index) => {
-        const y = index * 86;
+        const y = index * cardSpacing;
         const bg = this.add.graphics();
         bg.fillStyle(0x141821, 0.84);
-        bg.fillRoundedRect(0, y, 280, 78, 12);
+        bg.fillRoundedRect(0, y, 280, cardHeight, 12);
         bg.lineStyle(2, 0xf7e3a3, 1);
-        bg.strokeRoundedRect(0, y, 280, 78, 12);
+        bg.strokeRoundedRect(0, y, 280, cardHeight, 12);
 
         const title = this.add.text(12, y + 8, order.recipe.name, {
           fontFamily: 'Press Start 2P',
@@ -1013,7 +1160,7 @@
           align: 'right',
         }).setOrigin(1, 0);
 
-        const ingredientsRow = this.add.container(18, y + 36);
+        const ingredientsRow = this.add.container(18, y + 38);
         order.recipe.ingredients.forEach((ingredientKey, ingredientIndex) => {
           const icon = this.add.image(ingredientIndex * 36, 0, `ingredient-${ingredientKey}`)
             .setOrigin(0, 0)
@@ -1025,12 +1172,27 @@
           ingredientsRow.add(icon);
         });
 
-        this.ordersPanel.add([bg, title, timeText, ingredientsRow]);
+        const pointsValue = order.recipe.points ?? DIFFICULTY_POINTS[order.recipe.difficulty] ?? 0;
+        const difficultyLabel = DIFFICULTY_LABELS[order.recipe.difficulty] ?? 'Recipe';
+        const metaText = this.add.text(
+          12,
+          y + 66,
+          `${pointsValue} pts · ${difficultyLabel}`,
+          {
+            fontFamily: 'Press Start 2P',
+            fontSize: '10px',
+            color: '#f7e3a3',
+          }
+        );
+
+        this.ordersPanel.add([bg, title, timeText, ingredientsRow, metaText]);
       });
     }
 
     showSummary(summary) {
-      const { score, completed, failed, duration } = summary;
+      const { score, completed, failed, duration, target, passed, levelIndex, totalLevels } = summary;
+      const levelNumber = levelIndex + 1;
+      const isFinalLevel = levelIndex === totalLevels - 1;
       const overlay = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.6)
         .setDepth(30);
       const panel = this.add.graphics();
@@ -1040,30 +1202,73 @@
       panel.strokeRoundedRect(GAME_WIDTH / 2 - 220, GAME_HEIGHT / 2 - 140, 440, 260, 16);
       panel.setDepth(31);
 
-      const title = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 110, 'Service Complete!', {
+      const title = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 118, 'Service Complete!', {
         fontFamily: 'Press Start 2P',
         fontSize: '18px',
         color: '#fff8d6',
         align: 'center',
       }).setOrigin(0.5).setDepth(32);
 
+      const statusLine = this.add.text(
+        GAME_WIDTH / 2,
+        GAME_HEIGHT / 2 - 82,
+        passed ? `Level ${levelNumber} cleared!` : `Level ${levelNumber} failed`,
+        {
+          fontFamily: 'Press Start 2P',
+          fontSize: '14px',
+          color: passed ? '#9fe8a3' : '#ff8a7a',
+          align: 'center',
+        }
+      )
+        .setOrigin(0.5)
+        .setDepth(32);
+
       const details = [
         `Shift length: ${this.formatTime(duration)}`,
         `Orders served: ${completed}`,
         `Orders missed: ${failed}`,
-        `Final score: ${score}`,
+        `Goal: ${target} pts`,
+        `Final score: ${score} pts`,
       ];
 
       details.forEach((line, i) => {
-        this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 40 + i * 36, line, {
+        this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 20 + i * 32, line, {
           fontFamily: 'Press Start 2P',
-          fontSize: '14px',
+          fontSize: '12px',
           color: '#fff8d6',
           align: 'center',
         }).setOrigin(0.5).setDepth(32);
       });
 
-      const restart = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 120, 'Tap to restart shift', {
+      let ctaText = passed ? 'Tap to continue' : 'Tap to retry';
+      if (passed && !isFinalLevel) {
+        ctaText = `Tap to begin Level ${levelNumber + 1}`;
+      }
+      if (!passed) {
+        ctaText = `Tap to retry Level ${levelNumber}`;
+      }
+      if (passed && isFinalLevel) {
+        ctaText = 'Tap to replay from the tutorial';
+      }
+
+      const thankYouText = passed && isFinalLevel
+        ? "The rest of the game is still in development.\nThank you for playing! - BigRigDev"
+        : '';
+
+      if (thankYouText) {
+        this.add
+          .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 76, thankYouText, {
+            fontFamily: 'Press Start 2P',
+            fontSize: '12px',
+            color: '#fff8d6',
+            align: 'center',
+            wordWrap: { width: 380 },
+          })
+          .setOrigin(0.5)
+          .setDepth(32);
+      }
+
+      const restart = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 120, ctaText, {
         fontFamily: 'Press Start 2P',
         fontSize: '14px',
         color: '#9fe8a3',
@@ -1073,7 +1278,13 @@
       this.input.once('pointerdown', () => {
         this.scene.stop('GameScene');
         this.scene.stop();
-        this.scene.start('GameScene');
+        let nextLevel = levelIndex;
+        if (passed && !isFinalLevel) {
+          nextLevel = levelIndex + 1;
+        } else if (passed && isFinalLevel) {
+          nextLevel = 0;
+        }
+        this.scene.start('GameScene', { levelIndex: nextLevel });
       });
     }
   }
