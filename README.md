@@ -32,6 +32,19 @@ points. Clearing a level requires meeting or exceeding its point target before t
 2. Open `index.html` in any modern desktop or mobile browser. No build step is required.
 3. Tap or click stations to direct Gordon around the kitchen and push your service score as high as possible before time expires.
 
+## How players access the live game
+
+When the bundle is hosted on your site with the GRMC gate enabled, the player experience follows these steps:
+
+1. **Click the "Play" link/button on your website.** Open the game in a new browser tab so it can request wallet access without pop-up blockers interfering.
+2. **Wallet prompt appears immediately.** The fullscreen gate (powered by `wallet-gate.js`) lists the supported Solana wallets and explains that GRMC ownership is required.
+3. **Player connects their wallet.** After selecting Phantom, Solflare, Backpack, or another adapter, the wallet asks for permission to share the public key with the page.
+4. **GRMC balance is verified.** The gate queries the configured RPC endpoint for SPL token accounts that match your GRMC mint address and confirms the player meets the minimum balance policy.
+5. **Access granted or denied.**
+   - If the balance requirement is satisfied, the overlay fades out, Phaser boots, and the kitchen loads Level 1.
+   - If the wallet lacks GRMC, the overlay shows a friendly denial message and optional links where the player can acquire tokens before retrying.
+6. **Play the three-level campaign.** With Gordon on the floor, players use mouse clicks or taps to prep ingredients, cook recipes, and chase each level's score target. Completing Level 3 triggers the in-development finale message from BigRigDev.
+
 ## Hosting on your website
 
 Because the project is a static HTML/JS/CSS bundle, you can deploy it with any static host:
