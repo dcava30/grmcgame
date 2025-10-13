@@ -16,6 +16,8 @@
 
   const config = { ...defaultConfig, ...(window.GRMC_GATE_CONFIG || {}) };
 
+  let hasVerifiedToken = false;
+
   const providerCandidates = () => {
     const list = [];
     if (window.solana) {
@@ -99,6 +101,7 @@
   }
 
   function resetGateMessaging() {
+    hasVerifiedToken = false;
     setStatus('A GRMC balance check is required before service begins.');
     showError('');
     toggleLoading(false);
@@ -106,7 +109,7 @@
     connectButton.disabled = false;
     if (startButton) {
       startButton.hidden = true;
-      startButton.disabled = false;
+      startButton.disabled = true;
     }
   }
 
@@ -148,6 +151,7 @@
         return;
       }
 
+      hasVerifiedToken = true;
       showPlayReadyState();
     } catch (error) {
       console.error('[GRMC Gate] Wallet connection error:', error);
@@ -271,6 +275,7 @@
         setStatus('Approved wallet detected. Verifying GRMC balance…');
         const holdsToken = await verifyGatedToken(publicKey);
         if (holdsToken) {
+          hasVerifiedToken = true;
           showPlayReadyState();
         } else {
           resetGateMessaging();
@@ -293,6 +298,10 @@
 
   connectButton.addEventListener('click', connectWallet);
   startButton?.addEventListener('click', () => {
+    if (!hasVerifiedToken) {
+      showError('Please connect a GRMC-holding wallet before starting the game.');
+      return;
+    }
     hideOverlay();
     window.BlockyKitchenGame?.create();
   });
