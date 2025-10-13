@@ -10,6 +10,31 @@ This document outlines concrete patterns for wiring the Phaser-based kitchen gam
 4. **Sign messages:** Before calling any backend endpoint, have players sign a nonce with their wallet. Send the signature + nonce to the backend so it can verify wallet ownership and defend against replay attacks.
 5. **Secure transport:** Serve the game over HTTPS, and pin RPC providers (e.g., Triton, Helius, or a self-hosted RPC node) so traffic isn't routed through untrusted relays.
 
+### GRMC holder gating specifics
+
+To completely lock gameplay behind GRMC ownership, line up the following before you touch code:
+
+- **Mint details:** Provide the token mint address, supply decimals, and an explicit minimum balance (e.g., `> 0` GRMC or `>= 5,000`
+  GRMC). Engineering cannot implement gating without it.
+- **RPC budget:** Decide which RPC provider (and plan tier) you will use. Balance lookups happen on every session start, so free tiers
+  can throttle your audience.
+- **Adapter matrix:** Confirm which wallets the marketing team plans to support so the adapter packages can be bundled and the UI
+  wording can reflect that list.
+- **Fallback strategy:** Choose whether non-holders see a teaser trailer, are invited to purchase GRMC, or are simply blocked. That
+  informs the UX copywriting.
+
+Implementation blueprint:
+
+1. Add a pre-game modal with a **Connect Wallet** button. Use `wallet.connect()` to capture the player's public key. (The
+   shipped build now provides an example in `wallet-gate.js`.)
+2. Call `connection.getParsedTokenAccountsByOwner(publicKey, { mint })` via `@solana/web3.js` (or a backend proxy) to load SPL token
+   balances.
+3. Sum the returned token account balances and compare them to your minimum threshold.
+4. If the threshold is met, allow Phaser to start the level selection scene; otherwise show a "GRMC required" message and disable the
+   start button. Optionally inject a CTA that deep-links to an exchange page or your mint site.
+5. Re-run the check periodically or when the wallet emits a `accountChange` event so players who sell their tokens mid-session can be
+   gently warned or disconnected after a grace period.
+
 ## 2. Hybrid leaderboard architecture
 
 A dual-layer architecture keeps the leaderboard snappy while still anchoring high scores to the chain:

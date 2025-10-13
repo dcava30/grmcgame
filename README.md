@@ -32,6 +32,19 @@ points. Clearing a level requires meeting or exceeding its point target before t
 2. Open `index.html` in any modern desktop or mobile browser. No build step is required.
 3. Tap or click stations to direct Gordon around the kitchen and push your service score as high as possible before time expires.
 
+## How players access the live game
+
+When the bundle is hosted on your site with the GRMC gate enabled, the player experience follows these steps:
+
+1. **Click the "Play" link/button on your website.** Open the game in a new browser tab so it can request wallet access without pop-up blockers interfering.
+2. **Wallet prompt appears immediately.** The fullscreen gate (powered by `wallet-gate.js`) lists the supported Solana wallets and explains that GRMC ownership is required.
+3. **Player connects their wallet.** After selecting Phantom, Solflare, Backpack, or another adapter, the wallet asks for permission to share the public key with the page.
+4. **GRMC balance is verified.** The gate queries the configured RPC endpoint for SPL token accounts that match your GRMC mint address and confirms the player meets the minimum balance policy.
+5. **Access granted or denied.**
+   - If the balance requirement is satisfied, the overlay fades out, Phaser boots, and the kitchen loads Level 1.
+   - If the wallet lacks GRMC, the overlay shows a friendly denial message and optional links where the player can acquire tokens before retrying.
+6. **Play the three-level campaign.** With Gordon on the floor, players use mouse clicks or taps to prep ingredients, cook recipes, and chase each level's score target. Completing Level 3 triggers the in-development finale message from BigRigDev.
+
 ## Hosting on your website
 
 Because the project is a static HTML/JS/CSS bundle, you can deploy it with any static host:
@@ -71,6 +84,45 @@ To tie the GRMC memecoin into the game economy and create demand:
   contracts or an off-chain order flow that settles on-chain.
 - **Token sinks:** Offer limited-time events, kitchen themes, or premium levels that consume GRMC to enter, ensuring ongoing token
   utility.
+
+### GRMC holder-only access
+
+If you want the game to be playable *only* by wallets that currently hold GRMC, you will need a few concrete pieces of
+information and infrastructure:
+
+1. **Token metadata:** Share the GRMC mint address, decimals, and (optionally) the minimum balance that should unlock access.
+   Without that data the client cannot determine which token account to inspect or how much constitutes "holding".
+2. **Preferred Solana RPC endpoint:** Provide an RPC URL (Helius, Triton, QuickNode, or your own node). The client/ backend will
+   query it to fetch token balances. If you expect high traffic, budget for a dedicated plan so rate limits do not block players.
+3. **Wallet adapter configuration:** Decide which wallets must be supported (Phantom, Solflare, Backpack, etc.) so the
+   `@solana/wallet-adapter` layer can be configured ahead of time.
+4. **Access policy:** Confirm whether access is gated on *any* GRMC balance, a minimum token amount, or ownership of a specific
+   NFT receipt. This drives the logic the backend will enforce.
+
+With those inputs the flow works like this:
+
+1. Player loads the site and is presented with a "Connect Wallet" prompt before gameplay initializes.
+2. After the wallet connects, the client requests the list of SPL token accounts for that wallet and filters them for the GRMC
+   mint. (You can do this directly in the browser or via a thin backend proxy to keep your RPC key private.)
+3. If the balance meets your access policy, unlock the Phaser boot sequence; otherwise show a friendly modal explaining that GRMC
+   is required to play and link to an exchange or mint page.
+4. Optionally, repeat the balance check periodically (e.g., every few minutes) to ensure the player keeps holding the minimum.
+
+When you are ready to ship, supply the above metadata, RPC endpoint, and policy so the gating hook can be wired into
+`index.html` / `game.js` alongside the existing wallet-connected leaderboard code path.
+
+#### Configuring the live gate in this build
+
+This repository now includes a gate overlay (`wallet-gate.js`) that blocks Phaser from starting until the connecting wallet
+proves it holds GRMC. To make it production-ready:
+
+1. Open [`index.html`](./index.html) and update `window.GRMC_GATE_CONFIG.mintAddress` with the actual GRMC SPL token mint.
+2. Replace the default RPC endpoint if you have a preferred Solana provider (Helius, QuickNode, Triton, etc.).
+3. Adjust `minTokenBalance` if holding any fraction of GRMC should unlock play (set to `0.000001` for "any amount").
+4. (Optional) Set `window.GRMC_GATE_CONFIG.autoConnectTrusted = false` if you do **not** want the page to auto-detect previously
+   approved wallets on load.
+5. Upload the updated bundle to your host. When players click the link on your website, the new tab will immediately show the
+   wallet prompt, validate the GRMC balance, and only then boot the kitchen.
 
 ### Wallet-connected leaderboard flow
 

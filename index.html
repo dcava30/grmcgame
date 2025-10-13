@@ -8,11 +8,47 @@
   </head>
   <body>
     <main id="game-root" aria-label="Gordon Ramsay's Minecraft kitchen"></main>
-    <div class="screen-reader-help" aria-live="polite">
-      Prepare pixelated Minecraft-inspired dishes by tapping or clicking the different kitchen stations. Collect ingredients,
-      prep them on the cutting board, cook them on the stoves, then plate finished meals before the service clock expires.
+    <div id="wallet-gate-overlay" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+      <div class="wallet-gate__panel">
+        <h1 id="gate-title">Connect Your Solana Wallet</h1>
+        <p>
+          This experience is reserved for GRMC community members. Connect a supported Solana wallet holding the
+          <strong>GRMC</strong> token to start the three-level service.
+        </p>
+        <div class="wallet-gate__actions">
+          <button id="connect-wallet-button" class="wallet-gate__button" type="button">Connect Wallet</button>
+          <button id="start-game-button" class="wallet-gate__button wallet-gate__button--accent" type="button" hidden>
+            Play Gordon's Blocky Kitchen
+          </button>
+        </div>
+        <div id="wallet-loading" class="wallet-gate__loading" aria-live="polite" hidden>Verifying GRMC balance…</div>
+        <div id="wallet-status" class="wallet-gate__status" aria-live="polite"></div>
+        <div id="wallet-error" class="wallet-gate__error" role="alert" hidden></div>
+        <p class="wallet-gate__helper">
+          Don’t have GRMC yet? <a href="https://raydium.io/swap/?inputMint=sol&amp;outputMint=6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK&amp;referrer=7i5775tjSXaXut3KtahGmFTEuqY6TB3dS2BgDARdRYAd" target="_blank" rel="noreferrer">Buy GRMC on Raydium</a>
+          to unlock service.
+        </p>
+        <p class="wallet-gate__helper">
+          Need a compatible wallet? <a href="https://phantom.app/" target="_blank" rel="noreferrer">Install Phantom</a>
+          or any Solana wallet that injects <code>window.solana</code>.
+        </p>
+      </div>
     </div>
+    <div class="screen-reader-help" aria-live="polite">
+      Prepare pixelated Minecraft-inspired dishes by tapping or clicking the different kitchen stations. Collect
+      ingredients, prep them on the cutting board, cook them on the stoves, then plate finished meals before the service
+      clock expires.
+    </div>
+    <script>
+      window.GRMC_GATE_CONFIG = {
+        mintAddress: '6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK',
+        rpcEndpoint: 'https://api.mainnet-beta.solana.com',
+        minTokenBalance: 1,
+      };
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js" integrity="sha256-ONKM0xPNW3HIjh//ZQzQpLCPOfmU52nlFqYMiEa3OcM=" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.91.7/lib/index.iife.min.js" crossorigin="anonymous"></script>
     <script src="game.js"></script>
+    <script src="wallet-gate.js"></script>
   </body>
 </html>

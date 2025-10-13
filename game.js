@@ -1289,26 +1289,37 @@
     }
   }
 
-  const game = new Phaser.Game({
-    type: Phaser.AUTO,
-    width: GAME_WIDTH,
-    height: GAME_HEIGHT,
-    backgroundColor: '#10131a',
-    parent: 'game-root',
-    pixelArt: true,
-    scene: [BootScene, GameScene, UIScene],
-    physics: {
-      default: 'arcade',
-      arcade: {
-        gravity: { y: 0 },
-        debug: false,
-      },
-    },
-    scale: {
-      mode: Phaser.Scale.FIT,
-      autoCenter: Phaser.Scale.CENTER_BOTH,
-    },
-  });
+  function createGameInstance() {
+    if (window.blockyKitchenGame) {
+      return window.blockyKitchenGame;
+    }
 
-  window.blockyKitchenGame = game;
+    const game = new Phaser.Game({
+      type: Phaser.AUTO,
+      width: GAME_WIDTH,
+      height: GAME_HEIGHT,
+      backgroundColor: '#10131a',
+      parent: 'game-root',
+      pixelArt: true,
+      scene: [BootScene, GameScene, UIScene],
+      physics: {
+        default: 'arcade',
+        arcade: {
+          gravity: { y: 0 },
+          debug: false,
+        },
+      },
+      scale: {
+        mode: Phaser.Scale.FIT,
+        autoCenter: Phaser.Scale.CENTER_BOTH,
+      },
+    });
+
+    window.blockyKitchenGame = game;
+    return game;
+  }
+
+  window.BlockyKitchenGame = {
+    create: createGameInstance,
+  };
 })();
