@@ -11,9 +11,40 @@
     rpcEndpoint: 'https://api.mainnet-beta.solana.com',
     minTokenBalance: 1,
     commitment: 'confirmed',
+    autoConnectTrusted: true,
   };
 
   const config = { ...defaultConfig, ...(window.GRMC_GATE_CONFIG || {}) };
+
+  const providerCandidates = () => {
+    const list = [];
+    if (window.solana) {
+      list.push(window.solana);
+    }
+    if (window.phantom?.solana) {
+      list.push(window.phantom.solana);
+    }
+    if (Array.isArray(window.solanaProviders)) {
+      window.solanaProviders.forEach((prov) => {
+        if (!list.includes(prov)) {
+          list.push(prov);
+        }
+      });
+    }
+    return list;
+  };
+
+  function pickProvider() {
+    const candidates = providerCandidates();
+    if (!candidates.length) {
+      return null;
+    }
+
+    const prioritized = candidates.find((provider) => provider?.isPhantom || provider?.isBackpack || provider?.isSolflare);
+    return prioritized || candidates[0];
+  }
+
+  let provider = pickProvider();
 
   if (!overlay || !connectButton) {
     console.warn('[GRMC Gate] Overlay elements missing.');
@@ -95,7 +126,7 @@
       return;
     }
 
-    const provider = window.solana;
+    provider = pickProvider();
     if (!provider) {
       showError('No Solana wallet detected. Please install Phantom or another compatible wallet.');
       return;
@@ -104,12 +135,7 @@
     try {
       toggleLoading(true);
       setStatus('Requesting wallet connection…');
-      const response = await provider.connect();
-      const publicKey = response?.publicKey?.toString?.();
-
-      if (!publicKey) {
-        throw new Error('Wallet connection failed.');
-      }
+      const publicKey = await ensureWalletConnection({ onlyIfTrusted: false });
 
       setStatus('Connected. Checking GRMC balance…');
       const holdsToken = await verifyGatedToken(publicKey);
@@ -135,8 +161,39 @@
     }
   }
 
+  async function ensureWalletConnection({ onlyIfTrusted } = {}) {
+    if (!provider) {
+      throw new Error('No Solana wallet detected.');
+    }
+
+    if (provider.isConnected && provider.publicKey) {
+      return provider.publicKey.toString();
+    }
+
+    const response = await provider.connect({ onlyIfTrusted });
+    const publicKey = response?.publicKey || provider.publicKey;
+    const publicKeyString = publicKey?.toString?.();
+
+    if (!publicKeyString) {
+      throw new Error('Wallet connection failed.');
+    }
+
+    return publicKeyString;
+  }
+
+  function ensureWeb3Ready() {
+    if (typeof solanaWeb3 === 'undefined') {
+      showError('Solana web3 library failed to load. Check your network connection and try again.');
+      return false;
+    }
+    return true;
+  }
+
   async function verifyGatedToken(publicKeyString) {
     try {
+      if (!ensureWeb3Ready()) {
+        return false;
+      }
       const { Connection, PublicKey } = solanaWeb3;
       const connection = new Connection(config.rpcEndpoint, config.commitment);
       const owner = new PublicKey(publicKeyString);
@@ -163,7 +220,7 @@
   }
 
   function handleWalletEvents() {
-    const provider = window.solana;
+    provider = pickProvider();
     if (!provider) {
       return;
     }
@@ -190,6 +247,48 @@
   document.addEventListener('DOMContentLoaded', () => {
     resetGateMessaging();
     handleWalletEvents();
+    provider = pickProvider();
+
+    if (config.autoConnectTrusted === false) {
+      return;
+    }
+
+    if (!provider) {
+      return;
+    }
+
+    setTimeout(async () => {
+      try {
+        toggleLoading(true);
+        setStatus('Checking for an approved wallet…');
+        const publicKey = await ensureWalletConnection({ onlyIfTrusted: true });
+        if (!publicKey) {
+          toggleLoading(false);
+          resetGateMessaging();
+          return;
+        }
+
+        setStatus('Approved wallet detected. Verifying GRMC balance…');
+        const holdsToken = await verifyGatedToken(publicKey);
+        if (holdsToken) {
+          showPlayReadyState();
+        } else {
+          resetGateMessaging();
+          showError(
+            'No GRMC detected in this wallet. <a href="https://raydium.io/swap/?inputMint=sol&outputMint=6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK&referrer=7i5775tjSXaXut3KtahGmFTEuqY6TB3dS2BgDARdRYAd" target="_blank" rel="noreferrer">Buy GRMC on Raydium</a> and reconnect.'
+          );
+        }
+      } catch (error) {
+        if (error?.code === 4001 || /User rejected/i.test(error?.message || '')) {
+          resetGateMessaging();
+        } else {
+          console.warn('[GRMC Gate] Trusted autoconnect failed:', error);
+          showError('Unable to check your wallet automatically. Please press “Connect Wallet” to continue.');
+        }
+      } finally {
+        toggleLoading(false);
+      }
+    }, 150);
   });
 
   connectButton.addEventListener('click', connectWallet);

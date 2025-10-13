@@ -119,7 +119,9 @@ proves it holds GRMC. To make it production-ready:
 1. Open [`index.html`](./index.html) and update `window.GRMC_GATE_CONFIG.mintAddress` with the actual GRMC SPL token mint.
 2. Replace the default RPC endpoint if you have a preferred Solana provider (Helius, QuickNode, Triton, etc.).
 3. Adjust `minTokenBalance` if holding any fraction of GRMC should unlock play (set to `0.000001` for "any amount").
-4. Upload the updated bundle to your host. When players click the link on your website, the new tab will immediately show the
+4. (Optional) Set `window.GRMC_GATE_CONFIG.autoConnectTrusted = false` if you do **not** want the page to auto-detect previously
+   approved wallets on load.
+5. Upload the updated bundle to your host. When players click the link on your website, the new tab will immediately show the
    wallet prompt, validate the GRMC balance, and only then boot the kitchen.
 
 ### Wallet-connected leaderboard flow
