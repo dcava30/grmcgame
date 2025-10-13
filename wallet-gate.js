@@ -4,6 +4,7 @@
   const statusEl = document.getElementById('wallet-status');
   const errorEl = document.getElementById('wallet-error');
   const loadingEl = document.getElementById('wallet-loading');
+  const startButton = document.getElementById('start-game-button');
 
   const defaultConfig = {
     mintAddress: '',
@@ -26,20 +27,56 @@
   function showError(message) {
     if (!message) {
       errorEl.hidden = true;
-      errorEl.textContent = '';
+      errorEl.innerHTML = '';
       return;
     }
     errorEl.hidden = false;
-    errorEl.textContent = message;
+    errorEl.innerHTML = message;
   }
 
   function toggleLoading(isLoading) {
     loadingEl.hidden = !isLoading;
     connectButton.disabled = isLoading;
+    if (startButton) {
+      startButton.disabled = isLoading;
+    }
   }
 
   function hideOverlay() {
     overlay.hidden = true;
+  }
+
+  function showPlayReadyState() {
+    if (!startButton) {
+      hideOverlay();
+      window.BlockyKitchenGame?.create();
+      return;
+    }
+
+    setStatus('GRMC verified! Click “Play Gordon\'s Blocky Kitchen” to enter the service.');
+    startButton.hidden = false;
+    startButton.disabled = false;
+    connectButton.hidden = true;
+    toggleLoading(false);
+    if (typeof startButton.focus === 'function') {
+      try {
+        startButton.focus({ preventScroll: true });
+      } catch (err) {
+        startButton.focus();
+      }
+    }
+  }
+
+  function resetGateMessaging() {
+    setStatus('A GRMC balance check is required before service begins.');
+    showError('');
+    toggleLoading(false);
+    connectButton.hidden = false;
+    connectButton.disabled = false;
+    if (startButton) {
+      startButton.hidden = true;
+      startButton.disabled = false;
+    }
   }
 
   function ensureConfigValid() {
@@ -79,14 +116,13 @@
 
       if (!holdsToken) {
         toggleLoading(false);
-        setStatus('');
-        showError('No GRMC detected in this wallet. Acquire GRMC to unlock the kitchen.');
+        showError(
+          'No GRMC detected in this wallet. <a href="https://raydium.io/swap/?inputMint=sol&outputMint=6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK&referrer=7i5775tjSXaXut3KtahGmFTEuqY6TB3dS2BgDARdRYAd" target="_blank" rel="noreferrer">Buy GRMC on Raydium</a> and reconnect.'
+        );
         return;
       }
 
-      setStatus('GRMC balance verified. Loading kitchen…');
-      hideOverlay();
-      window.BlockyKitchenGame?.create();
+      showPlayReadyState();
     } catch (error) {
       console.error('[GRMC Gate] Wallet connection error:', error);
       if (error?.code === 4001) {
@@ -134,30 +170,31 @@
 
     provider.on?.('accountChanged', () => {
       if (!overlay.hidden) {
+        resetGateMessaging();
         setStatus('Wallet account changed. Please reconnect.');
       } else {
         // Force revalidation if overlay is already hidden
         overlay.hidden = false;
+        resetGateMessaging();
         setStatus('Wallet changed. Please reconnect to continue.');
-        showError('');
-        toggleLoading(false);
-        connectButton.disabled = false;
       }
     });
 
     provider.on?.('disconnect', () => {
       overlay.hidden = false;
       setStatus('Wallet disconnected. Reconnect to keep playing.');
-      showError('');
-      toggleLoading(false);
-      connectButton.disabled = false;
+      resetGateMessaging();
     });
   }
 
   document.addEventListener('DOMContentLoaded', () => {
-    setStatus('A GRMC balance check is required before service begins.');
+    resetGateMessaging();
     handleWalletEvents();
   });
 
   connectButton.addEventListener('click', connectWallet);
+  startButton?.addEventListener('click', () => {
+    hideOverlay();
+    window.BlockyKitchenGame?.create();
+  });
 })();

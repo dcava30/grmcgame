@@ -144,7 +144,15 @@ canvas {
   display: none;
 }
 
-#connect-wallet-button {
+.wallet-gate__actions {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(10px, 2.4vw, 18px);
+  align-items: center;
+  margin: clamp(12px, 3vw, 22px) 0;
+}
+
+.wallet-gate__button {
   appearance: none;
   border: 0;
   border-radius: 14px;
@@ -158,14 +166,26 @@ canvas {
   transition: transform 120ms ease, box-shadow 120ms ease;
 }
 
-#connect-wallet-button:hover,
-#connect-wallet-button:focus {
+.wallet-gate__button:hover,
+.wallet-gate__button:focus {
   transform: translateY(-2px);
   box-shadow: 0 1.1rem 2.2rem rgba(0, 0, 0, 0.45);
 }
 
-#connect-wallet-button:active {
+.wallet-gate__button:active {
   transform: translateY(1px);
+}
+
+.wallet-gate__button[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.wallet-gate__button--accent {
+  background: linear-gradient(135deg, #ffe066 0%, #f7b733 100%);
+  color: #2a1300;
 }
 
 @media (max-width: 520px) {

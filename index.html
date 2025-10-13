@@ -15,10 +15,19 @@
           This experience is reserved for GRMC community members. Connect a supported Solana wallet holding the
           <strong>GRMC</strong> token to start the three-level service.
         </p>
-        <button id="connect-wallet-button" type="button">Connect Wallet</button>
+        <div class="wallet-gate__actions">
+          <button id="connect-wallet-button" class="wallet-gate__button" type="button">Connect Wallet</button>
+          <button id="start-game-button" class="wallet-gate__button wallet-gate__button--accent" type="button" hidden>
+            Play Gordon's Blocky Kitchen
+          </button>
+        </div>
         <div id="wallet-loading" class="wallet-gate__loading" aria-live="polite" hidden>Verifying GRMC balance…</div>
         <div id="wallet-status" class="wallet-gate__status" aria-live="polite"></div>
         <div id="wallet-error" class="wallet-gate__error" role="alert" hidden></div>
+        <p class="wallet-gate__helper">
+          Don’t have GRMC yet? <a href="https://raydium.io/swap/?inputMint=sol&amp;outputMint=6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK&amp;referrer=7i5775tjSXaXut3KtahGmFTEuqY6TB3dS2BgDARdRYAd" target="_blank" rel="noreferrer">Buy GRMC on Raydium</a>
+          to unlock service.
+        </p>
         <p class="wallet-gate__helper">
           Need a compatible wallet? <a href="https://phantom.app/" target="_blank" rel="noreferrer">Install Phantom</a>
           or any Solana wallet that injects <code>window.solana</code>.
@@ -32,7 +41,7 @@
     </div>
     <script>
       window.GRMC_GATE_CONFIG = {
-        mintAddress: 'REPLACE_WITH_GRMC_MINT_ADDRESS',
+        mintAddress: '6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK',
         rpcEndpoint: 'https://api.mainnet-beta.solana.com',
         minTokenBalance: 1,
       };
