@@ -5,6 +5,28 @@
   const errorEl = document.getElementById('wallet-error');
   const loadingEl = document.getElementById('wallet-loading');
   const startButton = document.getElementById('start-game-button');
+  const trialButton = document.getElementById('trial-game-button');
+
+  const walletEventTarget = window.__grmcWalletEventTarget || new EventTarget();
+  window.__grmcWalletEventTarget = walletEventTarget;
+
+  window.emitWalletEvent = (type, detail = {}) => {
+    walletEventTarget.dispatchEvent(new CustomEvent(type, { detail }));
+  };
+
+  window.onWalletEvent = (type, handler) => {
+    walletEventTarget.addEventListener(type, handler);
+    return () => walletEventTarget.removeEventListener(type, handler);
+  };
+
+  const initialState = {
+    isHolder: false,
+    trialMode: false,
+    publicKey: null,
+    sessionJwt: null,
+  };
+
+  window.GRMCState = { ...initialState, ...(window.GRMCState || {}) };
 
   const defaultConfig = {
     mintAddress: '',
@@ -71,7 +93,10 @@
     loadingEl.hidden = !isLoading;
     connectButton.disabled = isLoading;
     if (startButton) {
-      startButton.disabled = isLoading;
+      startButton.disabled = isLoading && !startButton.dataset.ready;
+    }
+    if (trialButton) {
+      trialButton.disabled = isLoading;
     }
   }
 
@@ -79,18 +104,30 @@
     overlay.hidden = true;
   }
 
-  function showPlayReadyState() {
+  function applyAccessStyles() {
+    document.body.classList.toggle('holder-mode', Boolean(window.GRMCState.isHolder));
+    document.body.classList.toggle('trial-mode', Boolean(window.GRMCState.trialMode));
+  }
+
+  function showPlayReadyState(publicKey) {
     if (!startButton) {
       hideOverlay();
       window.BlockyKitchenGame?.create();
       return;
     }
 
-    setStatus('GRMC verified! Click “Play Gordon\'s Blocky Kitchen” to enter the service.');
+    startButton.dataset.ready = 'true';
+    setStatus('GRMC verified! Holders unlock full access, boosts, and tournaments.');
     startButton.hidden = false;
     startButton.disabled = false;
     connectButton.hidden = true;
     toggleLoading(false);
+    window.GRMCState.isHolder = true;
+    window.GRMCState.trialMode = false;
+    window.GRMCState.publicKey = publicKey || window.GRMCState.publicKey;
+    applyAccessStyles();
+    window.emitWalletEvent('access-update', { isHolder: true, trialMode: false, publicKey: window.GRMCState.publicKey });
+    window.emitWalletEvent('connected', { publicKey: window.GRMCState.publicKey, isHolder: true });
     if (typeof startButton.focus === 'function') {
       try {
         startButton.focus({ preventScroll: true });
@@ -102,7 +139,7 @@
 
   function resetGateMessaging() {
     hasVerifiedToken = false;
-    setStatus('A GRMC balance check is required before service begins.');
+    setStatus('A GRMC balance check is required before full access begins.');
     showError('');
     toggleLoading(false);
     connectButton.hidden = false;
@@ -110,6 +147,11 @@
     if (startButton) {
       startButton.hidden = true;
       startButton.disabled = true;
+      delete startButton.dataset.ready;
+    }
+    if (trialButton) {
+      trialButton.hidden = false;
+      trialButton.disabled = false;
     }
   }
 
@@ -120,6 +162,48 @@
       return false;
     }
     return true;
+  }
+
+  async function establishSession(publicKey) {
+    if (!config.apiBase) {
+      return null;
+    }
+
+    try {
+      const nonceResponse = await fetch(`${config.apiBase}/auth/nonce`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ publicKey }),
+      });
+      if (!nonceResponse.ok) {
+        return null;
+      }
+      const { nonce } = await nonceResponse.json();
+      if (!nonce || typeof provider?.signMessage !== 'function') {
+        return null;
+      }
+
+      const encoded = new TextEncoder().encode(nonce);
+      const signed = await provider.signMessage(encoded, 'utf8');
+      const verifyResponse = await fetch(`${config.apiBase}/auth/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ publicKey, signature: Array.from(signed?.signature || signed || []) }),
+      });
+      if (!verifyResponse.ok) {
+        return null;
+      }
+      const payload = await verifyResponse.json();
+      if (payload?.token) {
+        window.GRMCState.sessionJwt = payload.token;
+        window.emitWalletEvent('session', { token: payload.token, publicKey });
+        return payload.token;
+      }
+    } catch (error) {
+      console.warn('[GRMC Gate] Unable to establish API session:', error);
+    }
+
+    return null;
   }
 
   async function connectWallet() {
@@ -148,11 +232,17 @@
         showError(
           'No GRMC detected in this wallet. <a href="https://raydium.io/swap/?inputMint=sol&outputMint=6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK&referrer=7i5775tjSXaXut3KtahGmFTEuqY6TB3dS2BgDARdRYAd" target="_blank" rel="noreferrer">Buy GRMC on Raydium</a> and reconnect.'
         );
+        window.GRMCState.isHolder = false;
+        window.GRMCState.publicKey = publicKey;
+        window.emitWalletEvent('connected', { publicKey, isHolder: false });
+        applyAccessStyles();
         return;
       }
 
       hasVerifiedToken = true;
-      showPlayReadyState();
+      window.GRMCState.publicKey = publicKey;
+      await establishSession(publicKey);
+      showPlayReadyState(publicKey);
     } catch (error) {
       console.error('[GRMC Gate] Wallet connection error:', error);
       if (error?.code === 4001) {
@@ -230,6 +320,10 @@
     }
 
     provider.on?.('accountChanged', () => {
+      window.GRMCState.isHolder = false;
+      window.GRMCState.sessionJwt = null;
+      applyAccessStyles();
+      window.emitWalletEvent('access-update', { isHolder: false, trialMode: window.GRMCState.trialMode });
       if (!overlay.hidden) {
         resetGateMessaging();
         setStatus('Wallet account changed. Please reconnect.');
@@ -245,6 +339,9 @@
       overlay.hidden = false;
       setStatus('Wallet disconnected. Reconnect to keep playing.');
       resetGateMessaging();
+      window.GRMCState = { ...initialState };
+      applyAccessStyles();
+      window.emitWalletEvent('disconnected', {});
     });
   }
 
@@ -276,7 +373,9 @@
         const holdsToken = await verifyGatedToken(publicKey);
         if (holdsToken) {
           hasVerifiedToken = true;
-          showPlayReadyState();
+          window.GRMCState.publicKey = publicKey;
+          await establishSession(publicKey);
+          showPlayReadyState(publicKey);
         } else {
           resetGateMessaging();
           showError(
@@ -297,12 +396,30 @@
   });
 
   connectButton.addEventListener('click', connectWallet);
-  startButton?.addEventListener('click', () => {
+  function startFullAccess() {
     if (!hasVerifiedToken) {
       showError('Please connect a GRMC-holding wallet before starting the game.');
       return;
     }
+    window.GRMCState.trialMode = false;
+    window.GRMCState.isHolder = true;
+    applyAccessStyles();
+    window.emitWalletEvent('access-update', { isHolder: true, trialMode: false, publicKey: window.GRMCState.publicKey });
     hideOverlay();
     window.BlockyKitchenGame?.create();
-  });
+  }
+
+  function startTrial() {
+    window.GRMCState.trialMode = true;
+    window.GRMCState.isHolder = false;
+    window.GRMCState.sessionJwt = null;
+    applyAccessStyles();
+    window.emitWalletEvent('access-update', { isHolder: false, trialMode: true });
+    window.emitWalletEvent('trial-started', { trialMode: true });
+    hideOverlay();
+    window.BlockyKitchenGame?.create();
+  }
+
+  startButton?.addEventListener('click', startFullAccess);
+  trialButton?.addEventListener('click', startTrial);
 })();
