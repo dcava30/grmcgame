@@ -12,13 +12,16 @@
       <div class="wallet-gate__panel">
         <h1 id="gate-title">Connect Your Solana Wallet</h1>
         <p>
-          This experience is reserved for GRMC community members. Connect a supported Solana wallet holding the
-          <strong>GRMC</strong> token to start the three-level service.
+          Holders of the <strong>GRMC</strong> token unlock the full kitchen: all levels, boost discounts, cosmetics,
+          tournaments, and Kitchen Pass rewards. Anyone can sample the first service in trial mode.
         </p>
         <div class="wallet-gate__actions">
           <button id="connect-wallet-button" class="wallet-gate__button" type="button">Connect Wallet</button>
           <button id="start-game-button" class="wallet-gate__button wallet-gate__button--accent" type="button" hidden>
-            Play Gordon's Blocky Kitchen
+            Enter Full Kitchen
+          </button>
+          <button id="trial-game-button" class="wallet-gate__button wallet-gate__button--ghost" type="button">
+            Enter Trial Service
           </button>
         </div>
         <div id="wallet-loading" class="wallet-gate__loading" aria-live="polite" hidden>Verifying GRMC balance…</div>
@@ -26,7 +29,7 @@
         <div id="wallet-error" class="wallet-gate__error" role="alert" hidden></div>
         <p class="wallet-gate__helper">
           Don’t have GRMC yet? <a href="https://raydium.io/swap/?inputMint=sol&amp;outputMint=6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK&amp;referrer=7i5775tjSXaXut3KtahGmFTEuqY6TB3dS2BgDARdRYAd" target="_blank" rel="noreferrer">Buy GRMC on Raydium</a>
-          to unlock service.
+          to unlock every perk instantly, or hop into the free trial first.
         </p>
         <p class="wallet-gate__helper">
           Need a compatible wallet? <a href="https://phantom.app/" target="_blank" rel="noreferrer">Install Phantom</a>
@@ -44,8 +47,50 @@
         mintAddress: '6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK',
         rpcEndpoint: 'https://api.mainnet-beta.solana.com',
         minTokenBalance: 1,
+        apiBase: 'https://api.example.com',
       };
     </script>
+    <div id="shop-overlay" class="grmc-overlay" role="dialog" aria-modal="true" aria-labelledby="shop-title" hidden>
+      <div class="grmc-overlay__panel">
+        <div class="grmc-overlay__header">
+          <h2 id="shop-title">GRMC Kitchen Shop</h2>
+          <button type="button" class="grmc-overlay__close" data-close-overlay>&times;</button>
+        </div>
+        <div class="grmc-overlay__content" id="shop-content" aria-live="polite"></div>
+      </div>
+    </div>
+    <div
+      id="cosmetics-overlay"
+      class="grmc-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="cosmetics-title"
+      hidden
+    >
+      <div class="grmc-overlay__panel">
+        <div class="grmc-overlay__header">
+          <h2 id="cosmetics-title">Cosmetics Locker</h2>
+          <button type="button" class="grmc-overlay__close" data-close-overlay>&times;</button>
+        </div>
+        <div class="grmc-overlay__content" id="cosmetics-content" aria-live="polite"></div>
+      </div>
+    </div>
+    <div
+      id="rewards-overlay"
+      class="grmc-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="rewards-title"
+      hidden
+    >
+      <div class="grmc-overlay__panel">
+        <div class="grmc-overlay__header">
+          <h2 id="rewards-title">GRMC Rewards Hub</h2>
+          <button type="button" class="grmc-overlay__close" data-close-overlay>&times;</button>
+        </div>
+        <div class="grmc-overlay__content" id="rewards-content" aria-live="polite"></div>
+      </div>
+    </div>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js" integrity="sha256-ONKM0xPNW3HIjh//ZQzQpLCPOfmU52nlFqYMiEa3OcM=" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.91.7/lib/index.iife.min.js" crossorigin="anonymous"></script>
     <script src="game.js"></script>
