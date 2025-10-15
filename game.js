@@ -1,16 +1,1392 @@
 (() => {
+  const API_BASE = window.GRMC_GATE_CONFIG?.apiBase || '';
   const GAME_WIDTH = 960;
   const GAME_HEIGHT = 540;
   const MAX_ACTIVE_ORDERS = 4;
   const ORDER_SPAWN_DELAY = 14000;
   const ZOMBIE_CHAT_INTERVAL = 6000;
   const PLAYER_SPEED = 130;
+  const HOLDER_DISCOUNT = 0.9;
+
+  const STORAGE_KEYS = {
+    cosmeticsOwned: 'grmc_cosmetics_owned_v1',
+    cosmeticsEquipped: 'grmc_cosmetics_equipped_v1',
+    entitlements: 'grmc_entitlements_v1',
+    weeklyChallenges: 'grmc_weekly_challenges_v1',
+  };
+
+  const WEEKLY_CHALLENGE_BLUEPRINT = [
+    {
+      id: 'weekly_medium_plate_master',
+      title: 'Medium Plate Master',
+      description: 'Serve 12 medium-difficulty recipes this week.',
+      target: 12,
+      reward: 15,
+      track: 'order',
+      criteria: { difficulty: 'medium' },
+    },
+    {
+      id: 'weekly_flawless_shift',
+      title: 'Flawless Shift',
+      description: 'Finish a service without missing any orders.',
+      target: 1,
+      reward: 20,
+      track: 'service',
+      criteria: { failuresAllowed: 0 },
+    },
+    {
+      id: 'weekly_score_chaser',
+      title: 'Score Chaser',
+      description: 'Earn 180 points or more in a single service.',
+      target: 1,
+      reward: 18,
+      track: 'serviceScore',
+      criteria: { minimumScore: 180 },
+    },
+  ];
+
+  const WEEKLY_RESET_MS = 7 * 24 * 60 * 60 * 1000;
+
+  function clampNumber(value, min, max) {
+    const numeric = Number.isFinite(value) ? value : min;
+    return Math.min(Math.max(numeric, min), max);
+  }
+
+  function buildDefaultWeeklyChallengeState(now = Date.now()) {
+    return {
+      version: 'v1',
+      generatedAt: now,
+      resetAt: now + WEEKLY_RESET_MS,
+      challenges: WEEKLY_CHALLENGE_BLUEPRINT.map((challenge) => ({
+        ...challenge,
+        progress: 0,
+        claimable: 0,
+        completedAt: null,
+        claimedAt: null,
+        updatedAt: now,
+      })),
+    };
+  }
+
+  function normalizeWeeklyChallengeState(raw, now = Date.now()) {
+    if (!raw || typeof raw !== 'object') {
+      return buildDefaultWeeklyChallengeState(now);
+    }
+
+    const expired = !raw.resetAt || raw.resetAt <= now;
+    if (expired || raw.version !== 'v1') {
+      return buildDefaultWeeklyChallengeState(now);
+    }
+
+    const challenges = WEEKLY_CHALLENGE_BLUEPRINT.map((blueprint) => {
+      const stored = Array.isArray(raw.challenges)
+        ? raw.challenges.find((entry) => entry?.id === blueprint.id)
+        : null;
+      const progress = clampNumber(stored?.progress ?? 0, 0, blueprint.target);
+      const completed = stored?.completedAt ? progress >= blueprint.target : progress >= blueprint.target;
+      const claimedAt = stored?.claimedAt && completed ? stored.claimedAt : null;
+      const claimable = claimedAt ? 0 : clampNumber(stored?.claimable ?? (completed ? blueprint.reward : 0), 0, blueprint.reward);
+
+      return {
+        ...blueprint,
+        progress,
+        completedAt: completed ? (stored?.completedAt || now) : null,
+        claimable,
+        claimedAt,
+        updatedAt: stored?.updatedAt || now,
+      };
+    });
+
+    return {
+      version: 'v1',
+      generatedAt: raw.generatedAt || now,
+      resetAt: raw.resetAt,
+      challenges,
+      updatedAt: now,
+    };
+  }
+
+  function loadStoredWeeklyChallenges() {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEYS.weeklyChallenges);
+      if (!stored) return null;
+      return JSON.parse(stored);
+    } catch (error) {
+      console.warn('[GRMC] Failed to parse stored weekly challenges', error);
+      return null;
+    }
+  }
+
+  function saveWeeklyChallengesState(state = window.GRMCState?.weeklyChallengesState) {
+    if (!state) return;
+    try {
+      localStorage.setItem(STORAGE_KEYS.weeklyChallenges, JSON.stringify(state));
+    } catch (error) {
+      console.warn('[GRMC] Unable to persist weekly challenges', error);
+    }
+  }
+
+  function ensureWeeklyChallengesState(now = Date.now()) {
+    window.GRMCState = window.GRMCState || {};
+    const stored = window.GRMCState.weeklyChallengesState || loadStoredWeeklyChallenges();
+    let normalized = normalizeWeeklyChallengeState(stored, now);
+    if (normalized.resetAt <= now) {
+      normalized = buildDefaultWeeklyChallengeState(now);
+    }
+    const current = window.GRMCState.weeklyChallengesState;
+    const changed =
+      !current ||
+      current.resetAt !== normalized.resetAt ||
+      current.version !== normalized.version ||
+      current.challenges?.length !== normalized.challenges.length;
+    window.GRMCState.weeklyChallengesState = normalized;
+    if (changed) {
+      saveWeeklyChallengesState(normalized);
+    }
+    return normalized;
+  }
+
+  function emitChallengeUpdate() {
+    const state = window.GRMCState?.weeklyChallengesState;
+    if (!state || typeof window.emitWalletEvent !== 'function') return;
+    window.emitWalletEvent('challenge-update', { weekly: state });
+  }
+
+  function hasClaimableWeeklyRewards() {
+    const state = ensureWeeklyChallengesState();
+    return state.challenges.some((challenge) => (challenge.claimable || 0) > 0);
+  }
+
+  function finalizeChallengeCompletion(challenge, { silent = false } = {}) {
+    if (!challenge) return false;
+    if (challenge.progress < challenge.target) {
+      return false;
+    }
+    const wasClaimable = challenge.claimable || 0;
+    if (!challenge.completedAt) {
+      challenge.completedAt = Date.now();
+    }
+    if (!challenge.claimedAt) {
+      challenge.claimable = challenge.reward;
+      if (!silent && challenge.reward > 0 && wasClaimable < challenge.reward) {
+        showToast(
+          `${challenge.title} complete! Claim ${challenge.reward} GRMC from the rewards hub.`,
+          'success',
+          4200
+        );
+      }
+    }
+    return challenge.claimable > wasClaimable;
+  }
+
+  function incrementWeeklyChallenge(challengeId, amount = 1, options = {}) {
+    const state = ensureWeeklyChallengesState();
+    const challenge = state.challenges.find((entry) => entry.id === challengeId);
+    if (!challenge) return;
+    if (challenge.claimedAt) return;
+    const previous = challenge.progress || 0;
+    const next = clampNumber(previous + amount, 0, challenge.target);
+    if (next === previous) {
+      return;
+    }
+    challenge.progress = next;
+    challenge.updatedAt = Date.now();
+    if (challenge.progress >= challenge.target) {
+      finalizeChallengeCompletion(challenge, options);
+    }
+    saveWeeklyChallengesState(state);
+    emitChallengeUpdate();
+  }
+
+  function completeWeeklyChallenge(challengeId, options = {}) {
+    const state = ensureWeeklyChallengesState();
+    const challenge = state.challenges.find((entry) => entry.id === challengeId);
+    if (!challenge) return;
+    if (challenge.claimedAt) return;
+    challenge.progress = challenge.target;
+    challenge.updatedAt = Date.now();
+    finalizeChallengeCompletion(challenge, options);
+    saveWeeklyChallengesState(state);
+    emitChallengeUpdate();
+  }
+
+  function getWeeklyClaimableTotal() {
+    const state = ensureWeeklyChallengesState();
+    return state.challenges.reduce((sum, challenge) => sum + (challenge.claimable || 0), 0);
+  }
+
+  function handleOrderChallengeProgress(recipe) {
+    if (!recipe) return;
+    if (recipe.difficulty === 'medium') {
+      incrementWeeklyChallenge('weekly_medium_plate_master', 1);
+    }
+  }
+
+  function handleServiceChallengeProgress(summary) {
+    if (!summary) return;
+    const { failed = 0, score = 0, completed = 0 } = summary;
+    if (failed === 0 && completed > 0) {
+      completeWeeklyChallenge('weekly_flawless_shift');
+    }
+    if (score >= 180) {
+      completeWeeklyChallenge('weekly_score_chaser');
+    }
+  }
+
+  function formatResetCountdown(resetAt) {
+    const now = Date.now();
+    const diff = Math.max(0, resetAt - now);
+    const days = Math.floor(diff / (24 * 60 * 60 * 1000));
+    const hours = Math.floor((diff % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+    const minutes = Math.floor((diff % (60 * 60 * 1000)) / (60 * 1000));
+    if (days > 0) {
+      return `${days}d ${hours}h`;
+    }
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    const mins = Math.max(1, Math.ceil(diff / (60 * 1000)));
+    return `${mins}m`;
+  }
+
+  async function claimWeeklyChallenge(challengeId) {
+    const state = ensureWeeklyChallengesState();
+    const challenge = state.challenges.find((entry) => entry.id === challengeId);
+    if (!challenge) {
+      showToast('Challenge not found.', 'error');
+      return false;
+    }
+    if (!challenge.claimable) {
+      showToast('No GRMC is ready to claim for that challenge yet.', 'warning');
+      return false;
+    }
+
+    let success = false;
+    const sessionJwt = window.GRMCState?.sessionJwt;
+    if (API_BASE && sessionJwt) {
+      try {
+        const response = await fetch(`${API_BASE}/challenges/claim`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${sessionJwt}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ challengeId, progress: challenge.progress }),
+        });
+        if (!response.ok) {
+          const text = await response.text();
+          console.warn('[GRMC] Challenge claim failed', text);
+          showToast('Unable to submit your claim right now. Try again shortly.', 'error');
+          return false;
+        }
+        const payload = await response.json();
+        success = Boolean(payload?.ok);
+      } catch (error) {
+        console.warn('[GRMC] Challenge claim error', error);
+        showToast('Network issue submitting claim. Please retry.', 'error');
+        return false;
+      }
+    } else {
+      success = true;
+    }
+
+    if (!success) {
+      return false;
+    }
+
+    challenge.claimable = 0;
+    challenge.claimedAt = Date.now();
+    challenge.updatedAt = Date.now();
+    saveWeeklyChallengesState(state);
+    emitChallengeUpdate();
+    window.emitWalletEvent?.('challenge-claimed', { challengeId, reward: challenge.reward });
+    showToast(`Claim submitted! ${challenge.reward} GRMC will be paid out soon.`, 'success');
+    return true;
+  }
+
+  async function syncWeeklyChallengesFromServer() {
+    if (!API_BASE || !window.GRMCState?.sessionJwt) {
+      return ensureWeeklyChallengesState();
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/challenges/weekly`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${window.GRMCState.sessionJwt}`,
+        },
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        console.warn('[GRMC] Weekly challenges fetch failed', text);
+        return ensureWeeklyChallengesState();
+      }
+      const payload = await response.json();
+      const localState = ensureWeeklyChallengesState();
+      if (payload?.resetAt && Number(payload.resetAt) !== localState.resetAt) {
+        localState.resetAt = Number(payload.resetAt);
+      }
+      if (Array.isArray(payload?.challenges)) {
+        payload.challenges.forEach((serverChallenge) => {
+          const localChallenge = localState.challenges.find((entry) => entry.id === serverChallenge.id);
+          if (!localChallenge) return;
+          const serverProgress = Number(serverChallenge.progress) || 0;
+          const serverClaimable = Number(serverChallenge.claimable) || 0;
+          const serverClaimedAt = serverChallenge.claimedAt || null;
+          if (serverProgress > localChallenge.progress) {
+            localChallenge.progress = Math.min(localChallenge.target, serverProgress);
+            if (localChallenge.progress >= localChallenge.target && !localChallenge.claimedAt) {
+              localChallenge.claimable = Math.max(localChallenge.claimable, localChallenge.reward);
+            }
+          }
+          if (serverClaimable > localChallenge.claimable && !localChallenge.claimedAt) {
+            localChallenge.claimable = Math.min(serverClaimable, localChallenge.reward);
+          }
+          if (serverClaimedAt && !localChallenge.claimedAt) {
+            localChallenge.claimedAt = serverClaimedAt;
+            localChallenge.claimable = 0;
+          }
+        });
+      }
+      saveWeeklyChallengesState(localState);
+      emitChallengeUpdate();
+      return localState;
+    } catch (error) {
+      console.warn('[GRMC] Weekly challenge sync error', error);
+      return ensureWeeklyChallengesState();
+    }
+  }
+
+  function getLeaderboardRewardsState() {
+    ensureGlobalState();
+    window.GRMCState.leaderboardRewards = window.GRMCState.leaderboardRewards || {
+      available: 0,
+      lastFetched: 0,
+      lastUpdated: 0,
+    };
+    return window.GRMCState.leaderboardRewards;
+  }
+
+  function emitLeaderboardUpdate() {
+    if (typeof window.emitWalletEvent !== 'function') return;
+    window.emitWalletEvent('leaderboard-rewards', { rewards: getLeaderboardRewardsState() });
+  }
+
+  function hasClaimableLeaderboardRewards() {
+    const state = getLeaderboardRewardsState();
+    return (state.available || 0) > 0;
+  }
+
+  function hasAnyClaimableRewards() {
+    return hasClaimableWeeklyRewards() || hasClaimableLeaderboardRewards();
+  }
+
+  async function refreshLeaderboardRewards(options = {}) {
+    const { force = false } = options;
+    const state = getLeaderboardRewardsState();
+    const now = Date.now();
+    const sessionJwt = window.GRMCState?.sessionJwt;
+    if (!API_BASE || !sessionJwt) {
+      return state;
+    }
+    if (!force && now - (state.lastFetched || 0) < 60_000) {
+      return state;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/leaderboard/rewards`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${sessionJwt}`,
+        },
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        console.warn('[GRMC] Leaderboard rewards fetch failed', text);
+        return state;
+      }
+      const payload = await response.json();
+      state.available = Number(payload?.available) || 0;
+      state.lastFetched = now;
+      state.lastUpdated = now;
+      emitLeaderboardUpdate();
+    } catch (error) {
+      console.warn('[GRMC] Leaderboard reward fetch error', error);
+    }
+    return state;
+  }
+
+  async function claimLeaderboardRewards() {
+    const state = getLeaderboardRewardsState();
+    if (!state.available) {
+      showToast('No leaderboard payouts are ready to claim yet.', 'warning');
+      return false;
+    }
+
+    let success = false;
+    const sessionJwt = window.GRMCState?.sessionJwt;
+    if (API_BASE && sessionJwt) {
+      try {
+        const response = await fetch(`${API_BASE}/leaderboard/claim`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${sessionJwt}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ amount: state.available }),
+        });
+        if (!response.ok) {
+          const text = await response.text();
+          console.warn('[GRMC] Leaderboard claim failed', text);
+          showToast('Unable to claim leaderboard payout. Try again soon.', 'error');
+          return false;
+        }
+        const payload = await response.json();
+        success = Boolean(payload?.ok);
+      } catch (error) {
+        console.warn('[GRMC] Leaderboard claim error', error);
+        showToast('Network hiccup claiming payout. Please retry.', 'error');
+        return false;
+      }
+    } else {
+      success = true;
+    }
+
+    if (!success) {
+      return false;
+    }
+
+    const claimedAmount = state.available;
+    state.available = 0;
+    state.lastUpdated = Date.now();
+    emitLeaderboardUpdate();
+    window.emitWalletEvent?.('leaderboard-claimed', { amount: claimedAmount });
+    showToast(`Leaderboard payout of ${claimedAmount} GRMC queued for delivery!`, 'success');
+    return true;
+  }
+
+  const BOOSTS = [
+    {
+      id: 'boost_speed',
+      title: 'Rush Hour Boost',
+      icon: '⚡',
+      description: '+10% movement for 60 seconds',
+      price: 50,
+      durationMs: 60_000,
+      cooldownMs: 75_000,
+    },
+    {
+      id: 'boost_reroll',
+      title: 'Order Reroll',
+      icon: '🔁',
+      description: 'Swap a random active order instantly',
+      price: 20,
+      cooldownMs: 12_000,
+    },
+    {
+      id: 'boost_freeze',
+      title: 'Queue Freeze',
+      icon: '🧊',
+      description: 'Pause order timers for 20 seconds',
+      price: 40,
+      durationMs: 20_000,
+      cooldownMs: 90_000,
+    },
+    {
+      id: 'boost_stove_saver',
+      title: 'Stove Saver',
+      icon: '🛡️',
+      description: 'Prevent one recipe from expiring this service',
+      price: 30,
+      cooldownMs: 0,
+    },
+  ];
+
+  const SHOP_ITEMS = [
+    {
+      id: 'boost_speed',
+      title: 'Rush Hour Boost',
+      description: '+10% chef speed for 60 seconds (in-service only).',
+      price: 50,
+      tag: 'Boost Bar',
+      disabled: true,
+    },
+    {
+      id: 'boost_reroll',
+      title: 'Order Reroll',
+      description: 'Swap a random ticket mid-service from the boost bar.',
+      price: 20,
+      tag: 'Boost Bar',
+      disabled: true,
+    },
+    {
+      id: 'boost_freeze',
+      title: 'Queue Freeze',
+      description: 'Pause every timer for 20 seconds. Trigger via boost bar.',
+      price: 40,
+      tag: 'Boost Bar',
+      disabled: true,
+    },
+    {
+      id: 'boost_stove_saver',
+      title: 'Stove Saver',
+      description: 'Protect one ticket from burning out. Activate in-service.',
+      price: 30,
+      tag: 'Boost Bar',
+      disabled: true,
+    },
+    {
+      id: 'season_pass',
+      title: 'Kitchen Pass (Season)',
+      description: 'Premium track for 6–8 weeks: cosmetics, boosts, banner.',
+      price: 800,
+      tag: 'Seasonal',
+    },
+    {
+      id: 'tournament_entry',
+      title: 'Weekend Tournament Entry',
+      description: 'Enter Perfect Plates or Speed Service weekend cup. 65% prize pool.',
+      price: 100,
+      tag: 'Weekend Cup',
+    },
+    {
+      id: 'name_change',
+      title: 'Kitchen Name Change',
+      description: 'Refresh your kitchen placard. Rename once per purchase.',
+      price: 20,
+      tag: 'QoL',
+    },
+    {
+      id: 'guild_creation',
+      title: 'Found a Guild Kitchen',
+      description: 'Reserve a guild HQ for phase two clan wars. Seasonal upkeep applies.',
+      price: 1000,
+      tag: 'Phase 2',
+      disabled: true,
+    },
+  ];
+
+  const COSMETICS = [
+    {
+      id: 'chef_classic',
+      title: 'Classic Whites',
+      description: 'Signature GRMC chef coat. Always unlocked.',
+      type: 'player',
+      price: 0,
+      tint: 0xffffff,
+      default: true,
+    },
+    {
+      id: 'chef_midnight',
+      title: 'Midnight Brigade',
+      description: 'Deep navy coat with neon trim. Limited run.',
+      type: 'player',
+      price: 120,
+      tint: 0x2f3c9b,
+    },
+    {
+      id: 'chef_sunrise',
+      title: 'Sunrise Sear',
+      description: 'Gradient apron inspired by dawn over the blocky plains.',
+      type: 'player',
+      price: 95,
+      tint: 0xffc27c,
+    },
+    {
+      id: 'zombie_mint',
+      title: 'Minty Brain',
+      description: 'Pastel mint zombie sous-chef with golden eyes.',
+      type: 'companion',
+      price: 70,
+      tint: 0x9fffe0,
+      default: true,
+    },
+    {
+      id: 'zombie_ember',
+      title: 'Ember Sous',
+      description: 'Ashen zombie with ember glow particles.',
+      type: 'companion',
+      price: 110,
+      tint: 0xff7648,
+    },
+  ];
+
+  const TOURNAMENT_MODES = [
+    {
+      id: 'perfect_plates',
+      name: 'Perfect Plates Cup',
+      description: 'No missed orders allowed. Highest score wins.',
+      levelOverrides: {
+        id: 't-perfect',
+        name: 'Weekend Cup: Perfect Plates',
+        duration: 240,
+        targetScore: 150,
+        introText: 'Precision mode. Every order must be flawless!',
+        orderInterval: 9000,
+        initialOrders: 3,
+        allowRandomOrders: true,
+        allowedDifficulties: ['easy', 'medium', 'hard'],
+      },
+    },
+    {
+      id: 'speed_service',
+      name: 'Speed Service Cup',
+      description: 'Short timers, rapid-fire plating. Rack up points fast.',
+      levelOverrides: {
+        id: 't-speed',
+        name: 'Weekend Cup: Speed Service',
+        duration: 210,
+        targetScore: 160,
+        introText: 'Timers are tighter than ever. Stay in motion!',
+        orderInterval: 7000,
+        initialOrders: 4,
+        allowRandomOrders: true,
+        allowedDifficulties: ['easy', 'medium', 'hard'],
+      },
+    },
+  ];
+
+  function ensureGlobalState() {
+    if (!window.GRMCState) {
+      window.GRMCState = {};
+    }
+    const state = window.GRMCState;
+
+    const loadSet = (key) => {
+      try {
+        const stored = localStorage.getItem(key);
+        if (!stored) return new Set();
+        return new Set(JSON.parse(stored));
+      } catch (error) {
+        console.warn('[GRMC] Failed to load local storage set', key, error);
+        return new Set();
+      }
+    };
+
+    const loadObject = (key) => {
+      try {
+        const stored = localStorage.getItem(key);
+        if (!stored) return {};
+        return JSON.parse(stored) || {};
+      } catch (error) {
+        console.warn('[GRMC] Failed to load local storage entry', key, error);
+        return {};
+      }
+    };
+
+    if (!state.ownedCosmetics) {
+      const owned = loadSet(STORAGE_KEYS.cosmeticsOwned);
+      COSMETICS.filter((c) => c.default).forEach((c) => owned.add(c.id));
+      state.ownedCosmetics = owned;
+    }
+
+    if (!state.equippedCosmetics) {
+      const equipped = loadObject(STORAGE_KEYS.cosmeticsEquipped);
+      if (!equipped.player) {
+        equipped.player = COSMETICS.find((c) => c.type === 'player' && c.default)?.id || null;
+      }
+      if (!equipped.companion) {
+        equipped.companion = COSMETICS.find((c) => c.type === 'companion' && c.default)?.id || null;
+      }
+      state.equippedCosmetics = equipped;
+    }
+
+    if (!state.entitlements) {
+      state.entitlements = loadObject(STORAGE_KEYS.entitlements);
+    }
+
+    if (!state.leaderboardRewards) {
+      state.leaderboardRewards = { available: 0, lastFetched: 0, lastUpdated: 0 };
+    }
+
+    return state;
+  }
+
+  ensureGlobalState();
+  ensureWeeklyChallengesState();
 
   const DIFFICULTY_POINTS = {
     easy: 6,
     medium: 10,
     hard: 16,
   };
+
+  function saveOwnedCosmetics() {
+    try {
+      localStorage.setItem(STORAGE_KEYS.cosmeticsOwned, JSON.stringify([...window.GRMCState.ownedCosmetics]));
+    } catch (error) {
+      console.warn('[GRMC] Unable to persist owned cosmetics', error);
+    }
+  }
+
+  function saveEquippedCosmetics() {
+    try {
+      localStorage.setItem(STORAGE_KEYS.cosmeticsEquipped, JSON.stringify(window.GRMCState.equippedCosmetics));
+    } catch (error) {
+      console.warn('[GRMC] Unable to persist equipped cosmetics', error);
+    }
+  }
+
+  function saveEntitlements() {
+    try {
+      localStorage.setItem(STORAGE_KEYS.entitlements, JSON.stringify(window.GRMCState.entitlements));
+    } catch (error) {
+      console.warn('[GRMC] Unable to persist entitlements', error);
+    }
+  }
+
+  function isHolder() {
+    return Boolean(window.GRMCState?.isHolder);
+  }
+
+  function discountedPrice(basePrice) {
+    if (!isHolder()) {
+      return basePrice;
+    }
+    return Math.max(1, Math.round(basePrice * HOLDER_DISCOUNT));
+  }
+
+  let toastElement = null;
+  let toastTimer = null;
+
+  function ensureToastElement() {
+    if (toastElement) return toastElement;
+    toastElement = document.createElement('div');
+    toastElement.className = 'grmc-toast';
+    document.body.appendChild(toastElement);
+    return toastElement;
+  }
+
+  function showToast(message, variant = 'info', duration = 3200) {
+    if (!message) return;
+    const el = ensureToastElement();
+    el.textContent = message;
+    el.dataset.variant = variant;
+    el.classList.add('grmc-toast--visible');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      el.classList.remove('grmc-toast--visible');
+    }, duration);
+  }
+
+  function hideToast() {
+    if (!toastElement) return;
+    toastElement.classList.remove('grmc-toast--visible');
+    clearTimeout(toastTimer);
+  }
+
+  function applyPurchaseLocally(itemId, metadata = {}) {
+    ensureGlobalState();
+    switch (itemId) {
+      case 'season_pass':
+        window.GRMCState.entitlements.seasonPassActive = true;
+        window.GRMCState.entitlements.seasonPassActivatedAt = Date.now();
+        saveEntitlements();
+        showToast('Kitchen Pass unlocked! Premium rewards activated.');
+        return true;
+      case 'tournament_entry':
+        window.GRMCState.pendingTournament = {
+          mode: metadata.mode || 'perfect_plates',
+          purchasedAt: Date.now(),
+        };
+        window.emitWalletEvent?.('tournament-ticket', window.GRMCState.pendingTournament);
+        showToast('Tournament entry secured! Jump into the weekend cup.');
+        return true;
+      case 'name_change':
+        window.GRMCState.entitlements.renameTokens = (window.GRMCState.entitlements.renameTokens || 0) + 1;
+        saveEntitlements();
+        showToast('Kitchen rename token added to your account.');
+        return true;
+      default:
+        if (itemId.startsWith('cosmetic_')) {
+          const cosmeticId = itemId.replace('cosmetic_', '');
+          window.GRMCState.ownedCosmetics.add(cosmeticId);
+          saveOwnedCosmetics();
+          showToast('Cosmetic unlocked! Equip it in the locker.');
+          window.emitWalletEvent?.('cosmetic-unlocked', { cosmeticId });
+          return true;
+        }
+        return false;
+    }
+  }
+
+  async function spendToken(itemId, { price, metadata } = {}) {
+    ensureGlobalState();
+    const sessionJwt = window.GRMCState?.sessionJwt;
+    const provider = window.solana;
+    const normalizedPrice = typeof price === 'number' ? price : null;
+
+    if (!API_BASE || !sessionJwt || typeof provider?.signMessage !== 'function') {
+      console.warn('[GRMC] Falling back to local purchase flow for', itemId);
+      return applyPurchaseLocally(itemId, metadata);
+    }
+
+    try {
+      const intentResponse = await fetch(`${API_BASE}/purchase/intent`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${sessionJwt}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ itemId, price: normalizedPrice }),
+      });
+
+      if (!intentResponse.ok) {
+        const text = await intentResponse.text();
+        showToast('Purchase failed to initiate. Please try again later.', 'error');
+        console.warn('[GRMC] Purchase intent failed', text);
+        return false;
+      }
+
+      const intent = await intentResponse.json();
+      const message = intent?.message || JSON.stringify({ itemId, nonce: intent?.nonce, ts: Date.now() });
+      const encoded = new TextEncoder().encode(message);
+      const signatureResult = await provider.signMessage(encoded, 'utf8');
+      const signatureArray = Array.from(signatureResult?.signature || signatureResult || []);
+
+      const confirmResponse = await fetch(`${API_BASE}/purchase/confirm`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${sessionJwt}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ intentId: intent?.id || intent?.intentId, signature: signatureArray, itemId }),
+      });
+
+      if (!confirmResponse.ok) {
+        const text = await confirmResponse.text();
+        showToast('Purchase verification failed. Tokens were not spent.', 'error');
+        console.warn('[GRMC] Purchase confirmation failed', text);
+        return false;
+      }
+
+      const confirmation = await confirmResponse.json();
+      if (confirmation?.ok) {
+        applyPurchaseLocally(itemId, metadata);
+        return true;
+      }
+
+      showToast('Purchase could not be confirmed.', 'error');
+      return false;
+    } catch (error) {
+      console.error('[GRMC] Purchase error', error);
+      showToast('Something went wrong completing that purchase.', 'error');
+      return false;
+    }
+  }
+
+  async function submitScore(levelId, score, runDuration, extra = {}) {
+    ensureGlobalState();
+    if (!API_BASE || !window.GRMCState?.sessionJwt || typeof window.solana?.signMessage !== 'function') {
+      return;
+    }
+
+    try {
+      const payload = {
+        levelId,
+        score,
+        runDuration,
+        mode: extra.mode || 'standard',
+        ts: Date.now(),
+      };
+      const message = JSON.stringify(payload);
+      const encoded = new TextEncoder().encode(message);
+      const signatureResult = await window.solana.signMessage(encoded, 'utf8');
+      const signatureArray = Array.from(signatureResult?.signature || signatureResult || []);
+
+      await fetch(`${API_BASE}/scores/submit`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${window.GRMCState.sessionJwt}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ...payload, message, signature: signatureArray }),
+      });
+    } catch (error) {
+      console.warn('[GRMC] Score submission skipped', error);
+    }
+  }
+
+  const overlayRefs = {
+    shop: document.getElementById('shop-overlay'),
+    shopContent: document.getElementById('shop-content'),
+    cosmetics: document.getElementById('cosmetics-overlay'),
+    cosmeticsContent: document.getElementById('cosmetics-content'),
+    rewards: document.getElementById('rewards-overlay'),
+    rewardsContent: document.getElementById('rewards-content'),
+  };
+
+  const overlayState = {
+    resolver: null,
+  };
+
+  function closeOverlay(overlay) {
+    if (!overlay) return;
+    overlay.hidden = true;
+    if (overlay === overlayRefs.shop && overlayState.resolver) {
+      overlayState.resolver(false);
+      overlayState.resolver = null;
+    }
+  }
+
+  function attachOverlayListeners() {
+    document.querySelectorAll('[data-close-overlay]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const parent = button.closest('.grmc-overlay');
+        closeOverlay(parent);
+      });
+    });
+  }
+
+  function renderShopItems() {
+    ensureGlobalState();
+    const container = overlayRefs.shopContent;
+    if (!container) return;
+    container.innerHTML = '';
+
+    SHOP_ITEMS.forEach((item) => {
+      const card = document.createElement('article');
+      card.className = 'grmc-shop-card';
+
+      const title = document.createElement('h3');
+      title.className = 'grmc-shop-card__title';
+      title.textContent = item.title;
+
+      const desc = document.createElement('p');
+      desc.className = 'grmc-shop-card__desc';
+      desc.textContent = item.description;
+
+      const meta = document.createElement('div');
+      meta.className = 'grmc-shop-card__meta';
+
+      const priceTag = document.createElement('span');
+      priceTag.className = 'grmc-tag';
+      const finalPrice = discountedPrice(item.price);
+      priceTag.textContent = `${finalPrice} GRMC`;
+      if (isHolder() && finalPrice !== item.price) {
+        priceTag.title = `Holder discount applied (was ${item.price} GRMC)`;
+      }
+
+      if (item.tag) {
+        const contextTag = document.createElement('span');
+        contextTag.className = 'grmc-tag';
+        contextTag.textContent = item.tag;
+        meta.appendChild(contextTag);
+      }
+
+      const button = document.createElement('button');
+      button.className = 'grmc-shop-card__button';
+      button.type = 'button';
+
+      if (item.disabled) {
+        button.disabled = true;
+        button.textContent = 'Coming Soon';
+        if (item.id === 'guild_creation') {
+          priceTag.classList.add('grmc-tag--warning');
+        }
+      } else if (item.id.startsWith('boost_')) {
+        button.disabled = true;
+        button.textContent = 'Use from Boost Bar';
+      } else if (item.id === 'tournament_entry') {
+        button.textContent = 'Enter Weekend Cup';
+        button.addEventListener('click', async () => {
+          closeOverlay(overlayRefs.shop);
+          const success = await requestTournamentEntry();
+          if (!success) {
+            showToast('Tournament entry cancelled.', 'warning');
+          }
+        });
+      } else {
+        button.textContent = `Purchase for ${finalPrice} GRMC`;
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          const success = await spendToken(item.id, { price: finalPrice });
+          if (!success) {
+            button.disabled = false;
+          }
+        });
+      }
+
+      meta.appendChild(priceTag);
+      meta.appendChild(button);
+
+      card.appendChild(title);
+      card.appendChild(desc);
+      card.appendChild(meta);
+      container.appendChild(card);
+    });
+  }
+
+  function renderCosmetics() {
+    ensureGlobalState();
+    const container = overlayRefs.cosmeticsContent;
+    if (!container) return;
+    container.innerHTML = '';
+
+    const grid = document.createElement('div');
+    grid.className = 'grmc-cosmetics-grid';
+
+    COSMETICS.forEach((cosmetic) => {
+      const card = document.createElement('article');
+      card.className = 'grmc-cosmetic-card';
+
+      const title = document.createElement('h3');
+      title.className = 'grmc-cosmetic-card__title';
+      title.textContent = cosmetic.title;
+
+      const desc = document.createElement('p');
+      desc.className = 'grmc-cosmetic-card__desc';
+      desc.textContent = cosmetic.description;
+
+      const actions = document.createElement('div');
+      actions.className = 'grmc-cosmetic-actions';
+
+      const owned = window.GRMCState.ownedCosmetics.has(cosmetic.id);
+      const slot = cosmetic.type === 'player' ? 'player' : 'companion';
+      const equipped = window.GRMCState.equippedCosmetics?.[slot] === cosmetic.id;
+
+      const priceTag = document.createElement('span');
+      priceTag.className = 'grmc-tag';
+      priceTag.textContent = owned ? 'Owned' : `${discountedPrice(cosmetic.price)} GRMC`;
+      actions.appendChild(priceTag);
+
+      const button = document.createElement('button');
+      button.type = 'button';
+
+      if (!owned && cosmetic.price > 0) {
+        button.textContent = 'Unlock';
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          const success = await spendToken(`cosmetic_${cosmetic.id}`, {
+            price: discountedPrice(cosmetic.price),
+          });
+          if (success) {
+            window.GRMCState.ownedCosmetics.add(cosmetic.id);
+            saveOwnedCosmetics();
+            renderCosmetics();
+          } else {
+            button.disabled = false;
+          }
+        });
+      } else {
+        button.textContent = equipped ? 'Equipped' : 'Equip';
+        button.disabled = equipped;
+        button.addEventListener('click', () => {
+          if (equipped) return;
+          window.GRMCState.equippedCosmetics[slot] = cosmetic.id;
+          saveEquippedCosmetics();
+          renderCosmetics();
+          window.emitWalletEvent?.('cosmetic-equipped', { cosmeticId: cosmetic.id, slot });
+          showToast(`${cosmetic.title} equipped!`);
+        });
+      }
+
+      actions.appendChild(button);
+
+      card.appendChild(title);
+      card.appendChild(desc);
+      card.appendChild(actions);
+      grid.appendChild(card);
+    });
+
+    container.appendChild(grid);
+  }
+
+  function openShopOverlay() {
+    renderShopItems();
+    if (overlayRefs.shop) {
+      overlayRefs.shop.hidden = false;
+    }
+  }
+
+  function openCosmeticsOverlay() {
+    renderCosmetics();
+    if (overlayRefs.cosmetics) {
+      overlayRefs.cosmetics.hidden = false;
+    }
+  }
+
+  function renderRewardsOverlay() {
+    ensureWeeklyChallengesState();
+    const container = overlayRefs.rewardsContent;
+    if (!container) return;
+    container.innerHTML = '';
+
+    const weeklyState = window.GRMCState.weeklyChallengesState;
+    const claimableTotal = getWeeklyClaimableTotal();
+
+    const weeklySection = document.createElement('section');
+    weeklySection.className = 'grmc-rewards-section';
+
+    const weeklyHeader = document.createElement('header');
+    weeklyHeader.className = 'grmc-rewards-section__header';
+    const weeklyTitle = document.createElement('h3');
+    weeklyTitle.textContent = 'Weekly Challenges';
+    const resetTag = document.createElement('span');
+    resetTag.className = 'grmc-tag';
+    resetTag.textContent = `Resets in ${formatResetCountdown(weeklyState.resetAt)}`;
+    weeklyHeader.appendChild(weeklyTitle);
+    weeklyHeader.appendChild(resetTag);
+
+    const weeklySummary = document.createElement('p');
+    weeklySummary.className = 'grmc-rewards-section__summary';
+    weeklySummary.textContent = `Claimable this week: ${claimableTotal} GRMC`;
+
+    const weeklyGrid = document.createElement('div');
+    weeklyGrid.className = 'grmc-rewards-grid';
+
+    weeklyState.challenges.forEach((challenge) => {
+      const card = document.createElement('article');
+      card.className = 'grmc-reward-card';
+
+      const title = document.createElement('h4');
+      title.textContent = challenge.title;
+      const desc = document.createElement('p');
+      desc.className = 'grmc-reward-card__desc';
+      desc.textContent = challenge.description;
+
+      const progressLabel = document.createElement('div');
+      progressLabel.className = 'grmc-reward-card__progress-label';
+      progressLabel.textContent = `${challenge.progress}/${challenge.target} completed`;
+
+      const progressBar = document.createElement('div');
+      progressBar.className = 'grmc-progress';
+      const progressFill = document.createElement('div');
+      progressFill.className = 'grmc-progress__fill';
+      const ratio = challenge.target > 0 ? (challenge.progress / challenge.target) * 100 : 0;
+      progressFill.style.width = `${Math.min(100, Math.max(0, ratio))}%`;
+      progressBar.appendChild(progressFill);
+
+      const rewardTag = document.createElement('span');
+      rewardTag.className = 'grmc-tag';
+      rewardTag.textContent = `${challenge.reward} GRMC`;
+
+      const status = document.createElement('div');
+      status.className = 'grmc-reward-card__status';
+      if (challenge.claimable) {
+        status.textContent = 'Reward ready to claim';
+      } else if (challenge.claimedAt) {
+        status.textContent = 'Claimed';
+      } else {
+        status.textContent = 'Keep playing to earn this reward';
+      }
+
+      const actionButton = document.createElement('button');
+      actionButton.className = 'grmc-reward-card__button';
+      if (challenge.claimable) {
+        actionButton.textContent = `Claim ${challenge.reward} GRMC`;
+        actionButton.addEventListener('click', async () => {
+          actionButton.disabled = true;
+          const ok = await claimWeeklyChallenge(challenge.id);
+          if (!ok) {
+            actionButton.disabled = false;
+          }
+          renderRewardsOverlay();
+        });
+      } else {
+        actionButton.textContent = challenge.claimedAt ? 'Reward claimed' : 'Reward locked';
+        actionButton.disabled = true;
+        actionButton.classList.add('grmc-reward-card__button--disabled');
+      }
+
+      card.appendChild(title);
+      card.appendChild(desc);
+      card.appendChild(progressLabel);
+      card.appendChild(progressBar);
+      card.appendChild(rewardTag);
+      card.appendChild(status);
+      card.appendChild(actionButton);
+      weeklyGrid.appendChild(card);
+    });
+
+    weeklySection.appendChild(weeklyHeader);
+    weeklySection.appendChild(weeklySummary);
+    weeklySection.appendChild(weeklyGrid);
+
+    const leaderboardSection = document.createElement('section');
+    leaderboardSection.className = 'grmc-rewards-section';
+
+    const leaderboardHeader = document.createElement('header');
+    leaderboardHeader.className = 'grmc-rewards-section__header';
+    const leaderboardTitle = document.createElement('h3');
+    leaderboardTitle.textContent = 'Leaderboard Rewards';
+    leaderboardHeader.appendChild(leaderboardTitle);
+
+    const leaderboardSummary = document.createElement('p');
+    leaderboardSummary.className = 'grmc-rewards-section__summary';
+    const leaderboardState = getLeaderboardRewardsState();
+    leaderboardSummary.textContent = `Current payout available: ${leaderboardState.available || 0} GRMC`;
+
+    const leaderboardActions = document.createElement('div');
+    leaderboardActions.className = 'grmc-rewards-actions';
+
+    const refreshButton = document.createElement('button');
+    refreshButton.className = 'grmc-reward-card__button';
+    refreshButton.textContent = 'Refresh standings';
+    refreshButton.addEventListener('click', async () => {
+      refreshButton.disabled = true;
+      await refreshLeaderboardRewards({ force: true });
+      refreshButton.disabled = false;
+      renderRewardsOverlay();
+    });
+
+    const claimLeaderboardButton = document.createElement('button');
+    claimLeaderboardButton.className = 'grmc-reward-card__button';
+    claimLeaderboardButton.textContent = leaderboardState.available
+      ? `Claim ${leaderboardState.available} GRMC`
+      : 'No payout available yet';
+    if (leaderboardState.available) {
+      claimLeaderboardButton.addEventListener('click', async () => {
+        claimLeaderboardButton.disabled = true;
+        const ok = await claimLeaderboardRewards();
+        if (!ok) {
+          claimLeaderboardButton.disabled = false;
+        }
+        renderRewardsOverlay();
+      });
+    } else {
+      claimLeaderboardButton.disabled = true;
+      claimLeaderboardButton.classList.add('grmc-reward-card__button--disabled');
+    }
+
+    leaderboardActions.appendChild(refreshButton);
+    leaderboardActions.appendChild(claimLeaderboardButton);
+
+    const leaderboardHelp = document.createElement('p');
+    leaderboardHelp.className = 'grmc-rewards-section__help';
+    leaderboardHelp.textContent = 'Place on the weekly leaderboard to earn GRMC payouts backed by the revenue vault.';
+
+    leaderboardSection.appendChild(leaderboardHeader);
+    leaderboardSection.appendChild(leaderboardSummary);
+    leaderboardSection.appendChild(leaderboardActions);
+    leaderboardSection.appendChild(leaderboardHelp);
+
+    container.appendChild(weeklySection);
+    container.appendChild(leaderboardSection);
+  }
+
+  function openRewardsOverlay() {
+    renderRewardsOverlay();
+    if (overlayRefs.rewards) {
+      overlayRefs.rewards.hidden = false;
+    }
+    Promise.all([
+      syncWeeklyChallengesFromServer(),
+      refreshLeaderboardRewards({ force: true }),
+    ]).then(() => {
+      renderRewardsOverlay();
+    });
+  }
+
+  async function requestTournamentEntry(preferredModeId) {
+    ensureGlobalState();
+    if (!isHolder()) {
+      showToast('Hold at least 1 GRMC to enter weekend tournaments.', 'warning');
+      return false;
+    }
+
+    const mode =
+      TOURNAMENT_MODES.find((entry) => entry.id === preferredModeId) ||
+      TOURNAMENT_MODES[0];
+    const entryPrice = discountedPrice(100);
+
+    if (!overlayRefs.shop || !overlayRefs.shopContent) {
+      const confirmed = window.confirm(
+        `Spend ${entryPrice} GRMC to enter the ${mode.name}?`
+      );
+      if (!confirmed) {
+        return false;
+      }
+      const success = await spendToken('tournament_entry', {
+        price: entryPrice,
+        metadata: { mode: mode.id },
+      });
+      return success ? mode.id : false;
+    }
+
+    return new Promise((resolve) => {
+      overlayState.resolver = resolve;
+      const overlay = overlayRefs.shop;
+      const content = overlayRefs.shopContent;
+      overlay.hidden = false;
+      content.innerHTML = '';
+
+      const card = document.createElement('article');
+      card.className = 'grmc-shop-card';
+
+      const title = document.createElement('h3');
+      title.className = 'grmc-shop-card__title';
+      title.textContent = mode.name;
+
+      const desc = document.createElement('p');
+      desc.className = 'grmc-shop-card__desc';
+      desc.textContent = `${mode.description} Entry fee: ${entryPrice} GRMC.`;
+
+      const meta = document.createElement('div');
+      meta.className = 'grmc-shop-card__meta';
+
+      const priceTag = document.createElement('span');
+      priceTag.className = 'grmc-tag';
+      priceTag.textContent = `${entryPrice} GRMC`;
+      if (isHolder()) {
+        priceTag.title = 'Holder perks active: tournament discount applied.';
+      }
+
+      const actions = document.createElement('div');
+      actions.style.display = 'flex';
+      actions.style.gap = '12px';
+
+      const confirmButton = document.createElement('button');
+      confirmButton.className = 'grmc-shop-card__button';
+      confirmButton.textContent = 'Confirm Entry';
+      confirmButton.addEventListener('click', async () => {
+        confirmButton.disabled = true;
+        cancelButton.disabled = true;
+        const success = await spendToken('tournament_entry', {
+          price: entryPrice,
+          metadata: { mode: mode.id },
+        });
+        if (success) {
+          overlay.hidden = true;
+          overlayState.resolver = null;
+          resolve(mode.id);
+        } else {
+          confirmButton.disabled = false;
+          cancelButton.disabled = false;
+        }
+      });
+
+      const cancelButton = document.createElement('button');
+      cancelButton.className = 'grmc-shop-card__button';
+      cancelButton.textContent = 'Cancel';
+      cancelButton.style.background = 'rgba(9,14,20,0.7)';
+      cancelButton.style.color = '#f8f5e7';
+      cancelButton.addEventListener('click', () => {
+        overlay.hidden = true;
+        overlayState.resolver = null;
+        resolve(false);
+      });
+
+      actions.appendChild(confirmButton);
+      actions.appendChild(cancelButton);
+
+      meta.appendChild(priceTag);
+      meta.appendChild(actions);
+
+      card.appendChild(title);
+      card.appendChild(desc);
+      card.appendChild(meta);
+      content.appendChild(card);
+    });
+  }
+
+  window.GRMCUI = {
+    openShop: openShopOverlay,
+    openCosmetics: openCosmeticsOverlay,
+    showToast,
+  };
+
+  attachOverlayListeners();
 
   const DIFFICULTY_LABELS = {
     easy: 'Easy',
@@ -190,6 +1566,152 @@
     return Math.min(Math.max(value, min), max);
   }
 
+  class TitleScene extends Phaser.Scene {
+    constructor() {
+      super('TitleScene');
+    }
+
+    create() {
+      ensureGlobalState();
+      const background = this.add.rectangle(
+        GAME_WIDTH / 2,
+        GAME_HEIGHT / 2,
+        GAME_WIDTH,
+        GAME_HEIGHT,
+        0x05070c,
+        0.85
+      );
+      background.setDepth(0);
+
+      const title = this.add.text(GAME_WIDTH / 2, 110, "Gordon's Blocky Kitchen Brigade", {
+        fontFamily: 'Press Start 2P',
+        fontSize: '22px',
+        color: '#fff8d6',
+        align: 'center',
+        stroke: '#111214',
+        strokeThickness: 6,
+      })
+        .setOrigin(0.5)
+        .setDepth(1);
+
+      const statusText = isHolder()
+        ? 'Full access unlocked. Boost discounts active.'
+        : 'Trial mode: Level 1 only. Hold GRMC to unlock the rest.';
+
+      this.add
+        .text(GAME_WIDTH / 2, 160, statusText, {
+          fontFamily: 'Press Start 2P',
+          fontSize: '12px',
+          color: '#9fe8a3',
+          align: 'center',
+          wordWrap: { width: GAME_WIDTH * 0.8 },
+        })
+        .setOrigin(0.5)
+        .setDepth(1);
+
+      const menuYStart = 220;
+      const menuSpacing = 52;
+
+      const createMenuButton = (label, y, handler, options = {}) => {
+        const isLocked = Boolean(options.locked);
+        const button = this.add.text(GAME_WIDTH / 2, y, label, {
+          fontFamily: 'Press Start 2P',
+          fontSize: '16px',
+          color: isLocked ? '#6b7280' : '#ffe066',
+          align: 'center',
+          stroke: '#111214',
+          strokeThickness: 6,
+        })
+          .setOrigin(0.5)
+          .setDepth(2);
+
+        button.setInteractive({ useHandCursor: !isLocked });
+        button.on('pointerover', () => {
+          if (!isLocked) {
+            button.setColor('#fdf1a7');
+          }
+        });
+        button.on('pointerout', () => {
+          button.setColor(isLocked ? '#6b7280' : '#ffe066');
+        });
+        button.on('pointerup', handler);
+
+        return button;
+      };
+
+      LEVELS.forEach((level, index) => {
+        const locked = index > 0 && !isHolder();
+        const label = locked ? `${level.name} (Hold GRMC)` : level.name;
+        createMenuButton(label, menuYStart + index * menuSpacing, () => {
+          if (locked) {
+            showToast('Hold GRMC to unlock advanced services.', 'warning');
+            return;
+          }
+          this.startLevel(index);
+        }, { locked });
+      });
+
+      createMenuButton('Weekend Tournament Cup', menuYStart + LEVELS.length * menuSpacing, async () => {
+        const pendingMode = window.GRMCState?.pendingTournament?.mode;
+        const modeId = pendingMode || (await requestTournamentEntry());
+        if (!modeId) {
+          return;
+        }
+        const mode = TOURNAMENT_MODES.find((entry) => entry.id === modeId) || TOURNAMENT_MODES[0];
+        window.GRMCState.pendingTournament = null;
+        this.startLevel(0, { tournamentMode: mode });
+      });
+
+      createMenuButton('Kitchen Shop', menuYStart + (LEVELS.length + 1) * menuSpacing, () => {
+        openShopOverlay();
+      });
+
+      createMenuButton('Cosmetics Locker', menuYStart + (LEVELS.length + 2) * menuSpacing, () => {
+        openCosmeticsOverlay();
+      });
+
+      const rewardsRow = menuYStart + (LEVELS.length + 3) * menuSpacing;
+      const rewardsLabel = () => (hasAnyClaimableRewards() ? 'Rewards Hub (Claim!)' : 'Earning & Rewards');
+      this.rewardsButton = createMenuButton(rewardsLabel(), rewardsRow, () => {
+        openRewardsOverlay();
+      });
+
+      this.updateRewardsLabel = () => {
+        if (this.rewardsButton) {
+          this.rewardsButton.setText(rewardsLabel());
+        }
+      };
+      this.updateRewardsLabel();
+
+      syncWeeklyChallengesFromServer().then(() => this.updateRewardsLabel());
+      refreshLeaderboardRewards();
+
+      if (typeof window.onWalletEvent === 'function') {
+        const offChallenge = window.onWalletEvent('challenge-update', () => this.updateRewardsLabel());
+        const offChallengeClaim = window.onWalletEvent('challenge-claimed', () => this.updateRewardsLabel());
+        const offLeaderboard = window.onWalletEvent('leaderboard-rewards', () => this.updateRewardsLabel());
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+          offChallenge?.();
+          offChallengeClaim?.();
+          offLeaderboard?.();
+        });
+      }
+    }
+
+    startLevel(levelIndex, options = {}) {
+      if (options.tournamentMode) {
+        const mode = options.tournamentMode;
+        this.scene.start('GameScene', {
+          customLevel: { ...mode.levelOverrides },
+          tournamentMode: mode,
+        });
+        return;
+      }
+
+      this.scene.start('GameScene', { levelIndex });
+    }
+  }
+
   class BootScene extends Phaser.Scene {
     constructor() {
       super('BootScene');
@@ -293,7 +1815,7 @@
     }
 
     create() {
-      this.scene.start('GameScene', { levelIndex: 0 });
+      this.scene.start('TitleScene');
     }
   }
 
@@ -312,11 +1834,29 @@
       this.playerTarget = null;
       this.currentAction = null;
       this.actionMeter = null;
+      this.basePlayerSpeed = PLAYER_SPEED;
+      this.playerSpeed = PLAYER_SPEED;
+      this.speedBoostExpiresAt = 0;
+      this.boostCooldowns = {};
+      this.orderFreezeRemaining = 0;
+      this.stoveSaverCharges = 0;
+      this.tournamentMode = null;
+      this.customLevelActive = false;
+      this.detachCosmeticHandler = null;
+      this.speedBoostActive = false;
     }
 
     init(data) {
-      this.levelIndex = Phaser.Math.Clamp(data?.levelIndex ?? 0, 0, LEVELS.length - 1);
-      this.levelConfig = LEVELS[this.levelIndex];
+      if (data?.customLevel) {
+        this.levelConfig = { ...data.customLevel };
+        this.customLevelActive = true;
+        this.levelIndex = Phaser.Math.Clamp(data?.levelIndex ?? 0, 0, LEVELS.length - 1);
+      } else {
+        this.levelIndex = Phaser.Math.Clamp(data?.levelIndex ?? 0, 0, LEVELS.length - 1);
+        this.levelConfig = LEVELS[this.levelIndex];
+        this.customLevelActive = false;
+      }
+      this.tournamentMode = data?.tournamentMode || null;
     }
 
     create() {
@@ -330,6 +1870,12 @@
       this.playerTarget = null;
       this.currentAction = null;
       this.serviceOver = false;
+      this.boostCooldowns = {};
+      this.orderFreezeRemaining = 0;
+      this.stoveSaverCharges = 0;
+      this.speedBoostExpiresAt = 0;
+      this.playerSpeed = this.basePlayerSpeed;
+      this.speedBoostActive = false;
       this.levelTargetScore = this.levelConfig.targetScore ?? 0;
       this.allowRandomOrders = this.levelConfig.allowRandomOrders !== false;
       this.scriptedOrders = [];
@@ -345,6 +1891,13 @@
       this.createStations();
       this.createInputHandlers();
       this.createEvents();
+
+      this.applyCosmetics();
+      if (typeof window.onWalletEvent === 'function') {
+        this.detachCosmeticHandler = window.onWalletEvent('cosmetic-equipped', () => {
+          this.applyCosmetics();
+        });
+      }
 
       const spawnDelay = this.levelConfig.orderInterval ?? ORDER_SPAWN_DELAY;
       this.time.addEvent({ delay: spawnDelay, loop: true, callback: () => this.spawnOrder() });
@@ -366,6 +1919,13 @@
         targetScore: this.levelTargetScore,
         duration: this.levelDuration,
       });
+
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+        if (typeof this.detachCosmeticHandler === 'function') {
+          this.detachCosmeticHandler();
+          this.detachCosmeticHandler = null;
+        }
+      });
     }
 
     spawnInitialOrders() {
@@ -373,6 +1933,105 @@
       for (let i = 0; i < initialCount; i += 1) {
         this.time.delayedCall(600 * (i + 1), () => this.spawnOrder());
       }
+    }
+
+    async requestBoost(boostId) {
+      const boost = BOOSTS.find((entry) => entry.id === boostId);
+      if (!boost) {
+        return { success: false };
+      }
+      if (this.serviceOver) {
+        showToast('Service already ended. Boosts unavailable.', 'warning');
+        return { success: false };
+      }
+      if (boost.id === 'boost_reroll' && this.activeOrders.length === 0) {
+        showToast('No orders waiting for a reroll.', 'warning');
+        return { success: false };
+      }
+      if (boost.id === 'boost_freeze' && this.orderFreezeRemaining > 0) {
+        showToast('Queue already frozen!', 'warning');
+        return { success: false };
+      }
+      if (boost.id === 'boost_speed' && this.speedBoostActive) {
+        showToast('Rush Hour is already active.', 'warning');
+        return { success: false };
+      }
+      const now = this.time.now;
+      const cooldownEndsAt = this.boostCooldowns[boost.id] || 0;
+      if (cooldownEndsAt > now) {
+        const remaining = Math.ceil((cooldownEndsAt - now) / 1000);
+        showToast(`Boost cooling down (${remaining}s)`, 'warning');
+        return { success: false, cooldownRemainingMs: cooldownEndsAt - now };
+      }
+
+      const price = discountedPrice(boost.price);
+      const success = await spendToken(boost.id, { price });
+      if (!success) {
+        return { success: false };
+      }
+
+      this.applyBoostEffect(boost);
+      const cooldownMs = boost.cooldownMs ?? 5000;
+      if (cooldownMs > 0) {
+        this.boostCooldowns[boost.id] = now + cooldownMs;
+      }
+      this.events.emit('boost-activated', {
+        id: boost.id,
+        cooldownMs,
+        durationMs: boost.durationMs || null,
+      });
+      return { success: true, cooldownMs };
+    }
+
+    applyBoostEffect(boost) {
+      switch (boost.id) {
+        case 'boost_speed':
+          this.activateSpeedBoost(boost.durationMs || 60_000);
+          break;
+        case 'boost_reroll':
+          this.rerollRandomOrder();
+          break;
+        case 'boost_freeze':
+          this.freezeOrders(boost.durationMs || 20_000);
+          break;
+        case 'boost_stove_saver':
+          this.grantStoveSaver();
+          break;
+        default:
+          break;
+      }
+    }
+
+    activateSpeedBoost(durationMs) {
+      this.playerSpeed = this.basePlayerSpeed * 1.1;
+      this.speedBoostExpiresAt = this.time.now + durationMs;
+      this.speedBoostActive = true;
+      this.showFloatingText('Rush Hour!', this.player.x, this.player.y - 90, '#9fe8a3');
+      showToast('Rush Hour boost active!', 'info');
+    }
+
+    freezeOrders(durationMs) {
+      this.orderFreezeRemaining = Math.max(this.orderFreezeRemaining, durationMs);
+      this.events.emit('orders-freeze-start', { durationMs });
+      this.showFloatingText('Queue frozen!', this.player.x, this.player.y - 90, '#fff6cf');
+    }
+
+    grantStoveSaver() {
+      this.stoveSaverCharges += 1;
+      showToast('Stove Saver armed for the next burnout.', 'info');
+    }
+
+    rerollRandomOrder() {
+      if (this.activeOrders.length === 0) {
+        this.showFloatingText('No orders to reroll!', this.player.x, this.player.y - 60, '#ff8a7a');
+        return false;
+      }
+      const index = Phaser.Math.Between(0, this.activeOrders.length - 1);
+      const [order] = this.activeOrders.splice(index, 1);
+      this.events.emit('orders-updated', this.activeOrders);
+      this.spawnOrder({ difficulty: order.recipe.difficulty });
+      this.showFloatingText('Order rerolled!', this.player.x, this.player.y - 80, '#9fe8a3');
+      return true;
     }
 
     createWorld() {
@@ -424,6 +2083,30 @@
         stroke: '#111214',
         strokeThickness: 4,
       }).setDepth(8).setOrigin(0.5, 1);
+    }
+
+    applyCosmetics() {
+      ensureGlobalState();
+      const playerSlot = window.GRMCState.equippedCosmetics?.player;
+      const companionSlot = window.GRMCState.equippedCosmetics?.companion;
+      const playerCosmetic = COSMETICS.find((c) => c.id === playerSlot && c.type === 'player');
+      const companionCosmetic = COSMETICS.find((c) => c.id === companionSlot && c.type === 'companion');
+
+      if (this.player) {
+        if (playerCosmetic?.tint) {
+          this.player.setTint(playerCosmetic.tint);
+        } else {
+          this.player.clearTint();
+        }
+      }
+
+      if (this.zombie) {
+        if (companionCosmetic?.tint) {
+          this.zombie.setTint(companionCosmetic.tint);
+        } else {
+          this.zombie.clearTint();
+        }
+      }
     }
 
     createStations() {
@@ -598,6 +2281,14 @@
       if (this.serviceOver) {
         this.player.body.setVelocity(0);
         return;
+      }
+
+      if (this.speedBoostActive && time >= this.speedBoostExpiresAt) {
+        this.playerSpeed = this.basePlayerSpeed;
+        this.speedBoostActive = false;
+        this.speedBoostExpiresAt = 0;
+        this.events.emit('boost-expired', { id: 'boost_speed' });
+        showToast('Rush Hour boost ended.', 'warning');
       }
 
       if (this.playerTarget) {
@@ -843,6 +2534,7 @@
       this.completedOrders += 1;
       this.showFloatingText(`+${points}`, this.player.x, this.player.y - 80, '#b4ff9c');
       this.events.emit('score-changed', this.score);
+      handleOrderChallengeProgress(order.recipe);
 
       Phaser.Utils.Array.Remove(this.activeOrders, order);
       this.events.emit('orders-updated', this.activeOrders);
@@ -853,9 +2545,13 @@
       this.failedOrders += 1;
       this.showFloatingText('Order missed!', this.player.x, this.player.y - 60, '#ff8a7a');
       this.events.emit('orders-updated', this.activeOrders);
+      if (this.tournamentMode?.id === 'perfect_plates' && !this.serviceOver) {
+        showToast('Perfect Plates run ended due to a miss.', 'warning');
+        this.endService();
+      }
     }
 
-    spawnOrder() {
+    spawnOrder(options = {}) {
       if (this.serviceOver) {
         return;
       }
@@ -863,12 +2559,17 @@
         return;
       }
       let recipe = null;
-      if (this.scriptedOrders.length > 0) {
+      if (options.recipe) {
+        recipe = options.recipe;
+      } else if (this.scriptedOrders.length > 0) {
         recipe = this.scriptedOrders.shift();
       } else if (this.allowRandomOrders) {
         let pool = RECIPES;
         if (this.levelConfig.allowedDifficulties && this.levelConfig.allowedDifficulties.length > 0) {
-          pool = RECIPES.filter((entry) => this.levelConfig.allowedDifficulties.includes(entry.difficulty));
+          pool = pool.filter((entry) => this.levelConfig.allowedDifficulties.includes(entry.difficulty));
+        }
+        if (options.difficulty) {
+          pool = pool.filter((entry) => entry.difficulty === options.difficulty);
         }
         if (pool.length > 0) {
           recipe = pickRandom(pool);
@@ -883,6 +2584,7 @@
         remaining: [...recipe.ingredients],
         delivered: 0,
         timeRemaining: recipe.timeLimit,
+        stoveSaverSaved: false,
       };
       this.activeOrders.push(order);
       this.events.emit('orders-updated', this.activeOrders);
@@ -962,11 +2664,28 @@
     }
 
     updateOrders(delta) {
+      if (this.orderFreezeRemaining > 0) {
+        this.orderFreezeRemaining = Math.max(0, this.orderFreezeRemaining - delta);
+        this.events.emit('orders-freeze-tick', { remainingMs: this.orderFreezeRemaining });
+        if (this.orderFreezeRemaining <= 0) {
+          this.events.emit('orders-freeze-end');
+        }
+        return;
+      }
+
       const seconds = delta / 1000;
       for (let i = this.activeOrders.length - 1; i >= 0; i -= 1) {
         const order = this.activeOrders[i];
         order.timeRemaining = Math.max(0, order.timeRemaining - seconds);
         if (order.timeRemaining <= 0) {
+          if (this.stoveSaverCharges > 0 && !order.stoveSaverSaved) {
+            order.stoveSaverSaved = true;
+            this.stoveSaverCharges -= 1;
+            order.timeRemaining = Math.max(12, Math.round((order.recipe.timeLimit || 60) * 0.25));
+            this.events.emit('orders-updated', this.activeOrders);
+            this.showFloatingText('Stove Saver!', this.player.x, this.player.y - 70, '#9fe8a3');
+            continue;
+          }
           this.failOrder(order);
         }
       }
@@ -977,6 +2696,11 @@
       this.player.body.setVelocity(0, 0);
       this.time.removeAllEvents();
       const passed = this.score >= this.levelTargetScore;
+      const runDuration = Math.max(0, this.levelDuration - this.levelTimeRemaining);
+      const levelId = this.levelConfig.id || `level-${this.levelIndex + 1}`;
+      submitScore(levelId, this.score, runDuration, {
+        mode: this.tournamentMode ? `tournament:${this.tournamentMode.id}` : 'standard',
+      });
       this.events.emit('service-complete', {
         score: this.score,
         completed: this.completedOrders,
@@ -986,6 +2710,15 @@
         passed,
         levelIndex: this.levelIndex,
         totalLevels: LEVELS.length,
+        levelName: this.levelConfig.name,
+        tournamentMode: this.tournamentMode?.id || null,
+      });
+      handleServiceChallengeProgress({
+        score: this.score,
+        completed: this.completedOrders,
+        failed: this.failedOrders,
+        duration: this.levelDuration,
+        levelIndex: this.levelIndex,
       });
       this.showFloatingText('Service Complete!', GAME_WIDTH / 2, GAME_HEIGHT / 2 - 40, '#fff6cf');
     }
@@ -1027,6 +2760,7 @@
 
     create() {
       this.gameScene = this.scene.get('GameScene');
+      this.boostButtons = new Map();
 
       this.scoreText = this.add.text(40, 24, `Score: 0/${this.targetScore}`, {
         fontFamily: 'Press Start 2P',
@@ -1067,6 +2801,20 @@
       this.ordersPanel = this.add.container(40, 80);
       this.ordersPanel.setDepth(20);
 
+      this.createBoostBar();
+
+      this.freezeIndicator = this.add
+        .text(GAME_WIDTH / 2, GAME_HEIGHT - 36, '', {
+          fontFamily: 'Press Start 2P',
+          fontSize: '14px',
+          color: '#9fe8a3',
+          stroke: '#111214',
+          strokeThickness: 6,
+        })
+        .setOrigin(0.5)
+        .setDepth(25)
+        .setVisible(false);
+
       if (this.introText) {
         this.overlayText = this.add
           .text(GAME_WIDTH / 2, GAME_HEIGHT * 0.2, this.introText, {
@@ -1098,6 +2846,9 @@
       this.gameScene.events.on('inventory-changed', this.updateInventory, this);
       this.gameScene.events.on('orders-updated', this.refreshOrders, this);
       this.gameScene.events.on('service-complete', this.showSummary, this);
+      this.gameScene.events.on('orders-freeze-start', this.handleFreezeStart, this);
+      this.gameScene.events.on('orders-freeze-tick', this.handleFreezeTick, this);
+      this.gameScene.events.on('orders-freeze-end', this.handleFreezeEnd, this);
 
       this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
         this.gameScene.events.off('score-changed', this.updateScore, this);
@@ -1105,7 +2856,177 @@
         this.gameScene.events.off('inventory-changed', this.updateInventory, this);
         this.gameScene.events.off('orders-updated', this.refreshOrders, this);
         this.gameScene.events.off('service-complete', this.showSummary, this);
+        this.gameScene.events.off('orders-freeze-start', this.handleFreezeStart, this);
+        this.gameScene.events.off('orders-freeze-tick', this.handleFreezeTick, this);
+        this.gameScene.events.off('orders-freeze-end', this.handleFreezeEnd, this);
+        if (this.boostButtons) {
+          this.boostButtons.forEach((entry) => {
+            entry.cooldownEvent?.remove(false);
+          });
+          this.boostButtons.clear();
+        }
+        if (typeof this.holderListener === 'function') {
+          this.holderListener();
+          this.holderListener = null;
+        }
       });
+    }
+
+    createBoostBar() {
+      const panel = this.add.container(GAME_WIDTH - 200, GAME_HEIGHT - 140).setDepth(24);
+      const bg = this.add.graphics();
+      bg.fillStyle(0x0d131d, 0.82);
+      bg.fillRoundedRect(0, 0, 180, 120, 12);
+      bg.lineStyle(2, 0xf7e3a3, 0.6);
+      bg.strokeRoundedRect(0, 0, 180, 120, 12);
+      panel.add(bg);
+
+      BOOSTS.forEach((boost, index) => {
+        const col = index % 2;
+        const row = Math.floor(index / 2);
+        const x = 16 + col * 82;
+        const y = 12 + row * 52;
+
+        const button = this.add.rectangle(x, y, 70, 46, 0x192334, 0.92).setOrigin(0, 0);
+        button.setStrokeStyle(2, 0xf7e3a3, 0.8);
+        button.setInteractive({ useHandCursor: true });
+
+        const icon = this.add
+          .text(x + 35, y + 14, boost.icon, {
+            fontFamily: 'Press Start 2P',
+            fontSize: '16px',
+            color: '#fff8d6',
+          })
+          .setOrigin(0.5, 0);
+
+        const priceText = this.add
+          .text(x + 35, y + 32, `${discountedPrice(boost.price)}`, {
+            fontFamily: 'Press Start 2P',
+            fontSize: '10px',
+            color: '#9fe8a3',
+          })
+          .setOrigin(0.5, 0);
+
+        const cooldownText = this.add
+          .text(x + 35, y + 32, '', {
+            fontFamily: 'Press Start 2P',
+            fontSize: '10px',
+            color: '#ff8a7a',
+          })
+          .setOrigin(0.5, 0)
+          .setDepth(1);
+
+        panel.add(button);
+        panel.add(icon);
+        panel.add(priceText);
+        panel.add(cooldownText);
+
+        const entry = {
+          button,
+          icon,
+          priceText,
+          cooldownText,
+          cooldownEvent: null,
+          coolingDown: false,
+        };
+        this.boostButtons.set(boost.id, entry);
+
+        button.on('pointerup', () => {
+          this.attemptBoost(boost.id);
+        });
+      });
+
+      this.boostPanel = panel;
+
+      if (typeof window.onWalletEvent === 'function') {
+        this.holderListener = window.onWalletEvent('access-update', () => this.refreshBoostPrices());
+      }
+    }
+
+    refreshBoostPrices() {
+      this.boostButtons.forEach((entry, boostId) => {
+        const boost = BOOSTS.find((item) => item.id === boostId);
+        if (boost && entry.priceText) {
+          entry.priceText.setText(`${discountedPrice(boost.price)}`);
+        }
+      });
+    }
+
+    startCooldown(entry, durationMs) {
+      if (!entry) return;
+      if (entry.cooldownEvent) {
+        entry.cooldownEvent.remove(false);
+      }
+      if (durationMs <= 0) {
+        entry.coolingDown = false;
+        entry.cooldownText.setText('');
+        entry.button.setAlpha(1);
+        entry.button.setInteractive({ useHandCursor: true });
+        return;
+      }
+
+      entry.coolingDown = true;
+      entry.remainingMs = durationMs;
+      entry.cooldownText.setText(`${Math.ceil(durationMs / 1000)}s`);
+      entry.button.disableInteractive();
+      entry.button.setAlpha(0.6);
+
+      entry.cooldownEvent = this.time.addEvent({
+        delay: 1000,
+        loop: true,
+        callback: () => {
+          entry.remainingMs -= 1000;
+          if (entry.remainingMs > 0) {
+            entry.cooldownText.setText(`${Math.ceil(entry.remainingMs / 1000)}s`);
+          } else {
+            entry.cooldownText.setText('');
+            entry.button.setAlpha(1);
+            entry.button.setInteractive({ useHandCursor: true });
+            entry.cooldownEvent.remove(false);
+            entry.cooldownEvent = null;
+            entry.coolingDown = false;
+          }
+        },
+      });
+    }
+
+    async attemptBoost(boostId) {
+      const entry = this.boostButtons.get(boostId);
+      if (!entry || entry.coolingDown) {
+        return;
+      }
+      entry.coolingDown = true;
+      entry.button.disableInteractive();
+      entry.button.setAlpha(0.6);
+
+      const result = await this.gameScene.requestBoost(boostId);
+      if (!result.success) {
+        entry.coolingDown = false;
+        entry.button.setAlpha(1);
+        entry.button.setInteractive({ useHandCursor: true });
+        entry.cooldownText.setText('');
+        return;
+      }
+
+      this.startCooldown(entry, result.cooldownMs || 0);
+    }
+
+    handleFreezeStart(event) {
+      const total = event?.durationMs ?? 0;
+      this.freezeIndicator.setText(`Queue Frozen ${Math.ceil(total / 1000)}s`);
+      this.freezeIndicator.setVisible(true);
+    }
+
+    handleFreezeTick(event) {
+      const remaining = Math.max(0, Math.ceil((event?.remainingMs ?? 0) / 1000));
+      if (remaining > 0) {
+        this.freezeIndicator.setText(`Queue Frozen ${remaining}s`);
+      }
+    }
+
+    handleFreezeEnd() {
+      this.freezeIndicator.setVisible(false);
+      this.freezeIndicator.setText('');
     }
 
     formatTime(seconds) {
@@ -1190,9 +3111,25 @@
     }
 
     showSummary(summary) {
-      const { score, completed, failed, duration, target, passed, levelIndex, totalLevels } = summary;
+      const {
+        score,
+        completed,
+        failed,
+        duration,
+        target,
+        passed,
+        levelIndex,
+        totalLevels,
+        levelName,
+        tournamentMode,
+      } = summary;
       const levelNumber = levelIndex + 1;
-      const isFinalLevel = levelIndex === totalLevels - 1;
+      const isTournament = Boolean(tournamentMode);
+      const tournamentLabel = isTournament
+        ? TOURNAMENT_MODES.find((mode) => mode.id === tournamentMode)?.name || 'Weekend Tournament'
+        : null;
+      const displayLabel = tournamentLabel || levelName || `Level ${levelNumber}`;
+      const isFinalLevel = !isTournament && levelIndex === totalLevels - 1;
       const overlay = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.6)
         .setDepth(30);
       const panel = this.add.graphics();
@@ -1209,27 +3146,32 @@
         align: 'center',
       }).setOrigin(0.5).setDepth(32);
 
-      const statusLine = this.add.text(
-        GAME_WIDTH / 2,
-        GAME_HEIGHT / 2 - 82,
-        passed ? `Level ${levelNumber} cleared!` : `Level ${levelNumber} failed`,
-        {
-          fontFamily: 'Press Start 2P',
-          fontSize: '14px',
-          color: passed ? '#9fe8a3' : '#ff8a7a',
-          align: 'center',
-        }
-      )
+      const statusLine = this.add
+        .text(
+          GAME_WIDTH / 2,
+          GAME_HEIGHT / 2 - 82,
+          passed ? `${displayLabel} cleared!` : `${displayLabel} failed`,
+          {
+            fontFamily: 'Press Start 2P',
+            fontSize: '14px',
+            color: passed ? '#9fe8a3' : '#ff8a7a',
+            align: 'center',
+          }
+        )
         .setOrigin(0.5)
         .setDepth(32);
 
-      const details = [
+      const details = [];
+      if (tournamentLabel) {
+        details.push(tournamentLabel);
+      }
+      details.push(
         `Shift length: ${this.formatTime(duration)}`,
         `Orders served: ${completed}`,
         `Orders missed: ${failed}`,
         `Goal: ${target} pts`,
-        `Final score: ${score} pts`,
-      ];
+        `Final score: ${score} pts`
+      );
 
       details.forEach((line, i) => {
         this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 20 + i * 32, line, {
@@ -1241,17 +3183,17 @@
       });
 
       let ctaText = passed ? 'Tap to continue' : 'Tap to retry';
-      if (passed && !isFinalLevel) {
+      if (isTournament) {
+        ctaText = passed ? 'Tap to return to menu' : 'Tap to retry the tournament';
+      } else if (passed && !isFinalLevel) {
         ctaText = `Tap to begin Level ${levelNumber + 1}`;
-      }
-      if (!passed) {
+      } else if (!passed) {
         ctaText = `Tap to retry Level ${levelNumber}`;
-      }
-      if (passed && isFinalLevel) {
+      } else if (passed && isFinalLevel) {
         ctaText = 'Tap to replay from the tutorial';
       }
 
-      const thankYouText = passed && isFinalLevel
+      const thankYouText = passed && isFinalLevel && !isTournament
         ? "The rest of the game is still in development.\nThank you for playing! - BigRigDev"
         : '';
 
@@ -1278,6 +3220,10 @@
       this.input.once('pointerdown', () => {
         this.scene.stop('GameScene');
         this.scene.stop();
+        if (isTournament) {
+          this.scene.start('TitleScene');
+          return;
+        }
         let nextLevel = levelIndex;
         if (passed && !isFinalLevel) {
           nextLevel = levelIndex + 1;

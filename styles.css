@@ -188,6 +188,348 @@ canvas {
   color: #2a1300;
 }
 
+.wallet-gate__button--ghost {
+  background: rgba(9, 14, 20, 0.65);
+  color: #f8f5e7;
+  border: 2px solid rgba(159, 232, 163, 0.5);
+}
+
+.wallet-gate__button--ghost:hover,
+.wallet-gate__button--ghost:focus {
+  border-color: #9fe8a3;
+}
+
+.grmc-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 9, 15, 0.92);
+  backdrop-filter: blur(6px);
+  z-index: 1100;
+  padding: clamp(16px, 3vw, 42px);
+}
+
+.grmc-overlay[hidden] {
+  display: none;
+}
+
+.grmc-overlay__panel {
+  width: min(780px, 92vw);
+  max-height: 92vh;
+  background: linear-gradient(160deg, rgba(22, 28, 40, 0.98), rgba(12, 16, 24, 0.98));
+  border: 3px solid rgba(111, 208, 197, 0.8);
+  border-radius: 20px;
+  padding: clamp(18px, 2.6vw, 28px);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(14px, 2vw, 20px);
+  color: #f4f0da;
+  box-shadow: 0 1.8rem 3.2rem rgba(0, 0, 0, 0.55);
+}
+
+.grmc-overlay__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.grmc-overlay__header h2 {
+  font-size: clamp(18px, 2.2vw, 26px);
+  margin: 0;
+}
+
+.grmc-overlay__close {
+  appearance: none;
+  border: 0;
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  font-size: 22px;
+  line-height: 1;
+  background: rgba(9, 14, 20, 0.7);
+  color: #f4f0da;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 120ms ease;
+}
+
+.grmc-overlay__close:hover,
+.grmc-overlay__close:focus {
+  transform: scale(1.05);
+}
+
+.grmc-overlay__content {
+  overflow-y: auto;
+  padding-right: clamp(4px, 1vw, 12px);
+  display: grid;
+  gap: clamp(14px, 2vw, 20px);
+}
+
+.grmc-shop-card {
+  background: rgba(12, 17, 26, 0.9);
+  border: 2px solid rgba(247, 227, 163, 0.6);
+  border-radius: 16px;
+  padding: clamp(16px, 2.4vw, 22px);
+  display: grid;
+  gap: 12px;
+}
+
+.grmc-shop-card__title {
+  font-size: clamp(15px, 2vw, 18px);
+  margin: 0;
+}
+
+.grmc-shop-card__desc {
+  font-size: clamp(12px, 1.8vw, 14px);
+  color: #cdd7f2;
+  margin: 0;
+}
+
+.grmc-shop-card__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.grmc-shop-card__button {
+  appearance: none;
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 18px;
+  font-family: inherit;
+  font-size: 13px;
+  background: linear-gradient(135deg, #6fd0c5 0%, #4a9c92 100%);
+  color: #05121a;
+  cursor: pointer;
+}
+
+.grmc-shop-card__button[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.grmc-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(111, 208, 197, 0.18);
+  color: #9fe8a3;
+  border: 1px solid rgba(111, 208, 197, 0.4);
+}
+
+.grmc-tag--warning {
+  background: rgba(247, 140, 122, 0.12);
+  border-color: rgba(247, 140, 122, 0.4);
+  color: #ff9e8d;
+}
+
+.grmc-cosmetics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: clamp(14px, 2vw, 22px);
+}
+
+.grmc-cosmetic-card {
+  background: rgba(12, 18, 28, 0.9);
+  border: 2px solid rgba(111, 208, 197, 0.45);
+  border-radius: 18px;
+  padding: clamp(14px, 2vw, 20px);
+  display: grid;
+  gap: 10px;
+}
+
+.grmc-cosmetic-card__title {
+  margin: 0;
+  font-size: clamp(14px, 1.9vw, 17px);
+}
+
+.grmc-cosmetic-card__desc {
+  margin: 0;
+  font-size: clamp(11px, 1.6vw, 13px);
+  color: #cdd7f2;
+}
+
+.grmc-rewards-section {
+  background: rgba(8, 12, 20, 0.9);
+  border: 2px solid rgba(159, 232, 163, 0.35);
+  border-radius: 18px;
+  padding: clamp(18px, 2.4vw, 26px);
+  display: grid;
+  gap: clamp(12px, 2vw, 18px);
+}
+
+.grmc-rewards-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.grmc-rewards-section__header h3 {
+  margin: 0;
+  font-size: clamp(16px, 2.1vw, 20px);
+}
+
+.grmc-rewards-section__summary {
+  margin: 0;
+  font-size: clamp(12px, 1.6vw, 14px);
+  color: #dce3ff;
+}
+
+.grmc-rewards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: clamp(12px, 2vw, 18px);
+}
+
+.grmc-reward-card {
+  background: rgba(11, 17, 27, 0.92);
+  border: 2px solid rgba(247, 227, 163, 0.35);
+  border-radius: 16px;
+  padding: clamp(14px, 2vw, 20px);
+  display: grid;
+  gap: 10px;
+}
+
+.grmc-reward-card h4 {
+  margin: 0;
+  font-size: clamp(13px, 1.8vw, 16px);
+  color: #fff8d6;
+}
+
+.grmc-reward-card__desc {
+  margin: 0;
+  font-size: clamp(11px, 1.6vw, 13px);
+  color: #cdd7f2;
+}
+
+.grmc-reward-card__progress-label {
+  font-size: clamp(10px, 1.4vw, 12px);
+  color: #dce3ff;
+}
+
+.grmc-progress {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(79, 92, 120, 0.35);
+  overflow: hidden;
+}
+
+.grmc-progress__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(135deg, #9fe8a3 0%, #6fd0c5 100%);
+  transition: width 180ms ease-out;
+}
+
+.grmc-reward-card__status {
+  font-size: clamp(10px, 1.4vw, 12px);
+  color: #9fe8a3;
+}
+
+.grmc-reward-card__button {
+  appearance: none;
+  border: 0;
+  border-radius: 12px;
+  padding: 9px 16px;
+  font-family: inherit;
+  font-size: clamp(11px, 1.5vw, 13px);
+  background: linear-gradient(135deg, #ffe066 0%, #f7b733 100%);
+  color: #2a1300;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.grmc-reward-card__button:hover,
+.grmc-reward-card__button:focus {
+  transform: translateY(-1px);
+  box-shadow: 0 0.6rem 1.4rem rgba(0, 0, 0, 0.35);
+}
+
+.grmc-reward-card__button:active {
+  transform: translateY(1px);
+}
+
+.grmc-reward-card__button[disabled],
+.grmc-reward-card__button--disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: rgba(9, 14, 20, 0.65);
+  color: #cdd7f2;
+  box-shadow: none;
+  transform: none;
+}
+
+.grmc-rewards-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.grmc-rewards-section__help {
+  margin: 0;
+  font-size: clamp(11px, 1.5vw, 13px);
+  color: #cdd7f2;
+}
+
+.grmc-cosmetic-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.grmc-cosmetic-actions button {
+  appearance: none;
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 16px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  background: linear-gradient(135deg, #ffe066 0%, #f7b733 100%);
+  color: #2a1300;
+}
+
+.grmc-cosmetic-actions button[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.grmc-toast {
+  position: fixed;
+  left: 50%;
+  bottom: clamp(18px, 4vw, 40px);
+  transform: translateX(-50%);
+  background: rgba(10, 15, 24, 0.9);
+  color: #f8f5e7;
+  padding: 14px 20px;
+  border-radius: 14px;
+  border: 2px solid rgba(111, 208, 197, 0.5);
+  font-size: 13px;
+  box-shadow: 0 0.8rem 1.6rem rgba(0, 0, 0, 0.4);
+  z-index: 1200;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.grmc-toast--visible {
+  opacity: 1;
+  transform: translate(-50%, -10px);
+}
+
 @media (max-width: 520px) {
   .wallet-gate__panel {
     border-width: 3px;
