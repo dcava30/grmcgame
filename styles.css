@@ -359,6 +359,131 @@ canvas {
   color: #cdd7f2;
 }
 
+.grmc-rewards-section {
+  background: rgba(8, 12, 20, 0.9);
+  border: 2px solid rgba(159, 232, 163, 0.35);
+  border-radius: 18px;
+  padding: clamp(18px, 2.4vw, 26px);
+  display: grid;
+  gap: clamp(12px, 2vw, 18px);
+}
+
+.grmc-rewards-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.grmc-rewards-section__header h3 {
+  margin: 0;
+  font-size: clamp(16px, 2.1vw, 20px);
+}
+
+.grmc-rewards-section__summary {
+  margin: 0;
+  font-size: clamp(12px, 1.6vw, 14px);
+  color: #dce3ff;
+}
+
+.grmc-rewards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: clamp(12px, 2vw, 18px);
+}
+
+.grmc-reward-card {
+  background: rgba(11, 17, 27, 0.92);
+  border: 2px solid rgba(247, 227, 163, 0.35);
+  border-radius: 16px;
+  padding: clamp(14px, 2vw, 20px);
+  display: grid;
+  gap: 10px;
+}
+
+.grmc-reward-card h4 {
+  margin: 0;
+  font-size: clamp(13px, 1.8vw, 16px);
+  color: #fff8d6;
+}
+
+.grmc-reward-card__desc {
+  margin: 0;
+  font-size: clamp(11px, 1.6vw, 13px);
+  color: #cdd7f2;
+}
+
+.grmc-reward-card__progress-label {
+  font-size: clamp(10px, 1.4vw, 12px);
+  color: #dce3ff;
+}
+
+.grmc-progress {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(79, 92, 120, 0.35);
+  overflow: hidden;
+}
+
+.grmc-progress__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(135deg, #9fe8a3 0%, #6fd0c5 100%);
+  transition: width 180ms ease-out;
+}
+
+.grmc-reward-card__status {
+  font-size: clamp(10px, 1.4vw, 12px);
+  color: #9fe8a3;
+}
+
+.grmc-reward-card__button {
+  appearance: none;
+  border: 0;
+  border-radius: 12px;
+  padding: 9px 16px;
+  font-family: inherit;
+  font-size: clamp(11px, 1.5vw, 13px);
+  background: linear-gradient(135deg, #ffe066 0%, #f7b733 100%);
+  color: #2a1300;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.grmc-reward-card__button:hover,
+.grmc-reward-card__button:focus {
+  transform: translateY(-1px);
+  box-shadow: 0 0.6rem 1.4rem rgba(0, 0, 0, 0.35);
+}
+
+.grmc-reward-card__button:active {
+  transform: translateY(1px);
+}
+
+.grmc-reward-card__button[disabled],
+.grmc-reward-card__button--disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: rgba(9, 14, 20, 0.65);
+  color: #cdd7f2;
+  box-shadow: none;
+  transform: none;
+}
+
+.grmc-rewards-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.grmc-rewards-section__help {
+  margin: 0;
+  font-size: clamp(11px, 1.5vw, 13px);
+  color: #cdd7f2;
+}
+
 .grmc-cosmetic-actions {
   display: flex;
   gap: 10px;

@@ -12,7 +12,458 @@
     cosmeticsOwned: 'grmc_cosmetics_owned_v1',
     cosmeticsEquipped: 'grmc_cosmetics_equipped_v1',
     entitlements: 'grmc_entitlements_v1',
+    weeklyChallenges: 'grmc_weekly_challenges_v1',
   };
+
+  const WEEKLY_CHALLENGE_BLUEPRINT = [
+    {
+      id: 'weekly_medium_plate_master',
+      title: 'Medium Plate Master',
+      description: 'Serve 12 medium-difficulty recipes this week.',
+      target: 12,
+      reward: 15,
+      track: 'order',
+      criteria: { difficulty: 'medium' },
+    },
+    {
+      id: 'weekly_flawless_shift',
+      title: 'Flawless Shift',
+      description: 'Finish a service without missing any orders.',
+      target: 1,
+      reward: 20,
+      track: 'service',
+      criteria: { failuresAllowed: 0 },
+    },
+    {
+      id: 'weekly_score_chaser',
+      title: 'Score Chaser',
+      description: 'Earn 180 points or more in a single service.',
+      target: 1,
+      reward: 18,
+      track: 'serviceScore',
+      criteria: { minimumScore: 180 },
+    },
+  ];
+
+  const WEEKLY_RESET_MS = 7 * 24 * 60 * 60 * 1000;
+
+  function clampNumber(value, min, max) {
+    const numeric = Number.isFinite(value) ? value : min;
+    return Math.min(Math.max(numeric, min), max);
+  }
+
+  function buildDefaultWeeklyChallengeState(now = Date.now()) {
+    return {
+      version: 'v1',
+      generatedAt: now,
+      resetAt: now + WEEKLY_RESET_MS,
+      challenges: WEEKLY_CHALLENGE_BLUEPRINT.map((challenge) => ({
+        ...challenge,
+        progress: 0,
+        claimable: 0,
+        completedAt: null,
+        claimedAt: null,
+        updatedAt: now,
+      })),
+    };
+  }
+
+  function normalizeWeeklyChallengeState(raw, now = Date.now()) {
+    if (!raw || typeof raw !== 'object') {
+      return buildDefaultWeeklyChallengeState(now);
+    }
+
+    const expired = !raw.resetAt || raw.resetAt <= now;
+    if (expired || raw.version !== 'v1') {
+      return buildDefaultWeeklyChallengeState(now);
+    }
+
+    const challenges = WEEKLY_CHALLENGE_BLUEPRINT.map((blueprint) => {
+      const stored = Array.isArray(raw.challenges)
+        ? raw.challenges.find((entry) => entry?.id === blueprint.id)
+        : null;
+      const progress = clampNumber(stored?.progress ?? 0, 0, blueprint.target);
+      const completed = stored?.completedAt ? progress >= blueprint.target : progress >= blueprint.target;
+      const claimedAt = stored?.claimedAt && completed ? stored.claimedAt : null;
+      const claimable = claimedAt ? 0 : clampNumber(stored?.claimable ?? (completed ? blueprint.reward : 0), 0, blueprint.reward);
+
+      return {
+        ...blueprint,
+        progress,
+        completedAt: completed ? (stored?.completedAt || now) : null,
+        claimable,
+        claimedAt,
+        updatedAt: stored?.updatedAt || now,
+      };
+    });
+
+    return {
+      version: 'v1',
+      generatedAt: raw.generatedAt || now,
+      resetAt: raw.resetAt,
+      challenges,
+      updatedAt: now,
+    };
+  }
+
+  function loadStoredWeeklyChallenges() {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEYS.weeklyChallenges);
+      if (!stored) return null;
+      return JSON.parse(stored);
+    } catch (error) {
+      console.warn('[GRMC] Failed to parse stored weekly challenges', error);
+      return null;
+    }
+  }
+
+  function saveWeeklyChallengesState(state = window.GRMCState?.weeklyChallengesState) {
+    if (!state) return;
+    try {
+      localStorage.setItem(STORAGE_KEYS.weeklyChallenges, JSON.stringify(state));
+    } catch (error) {
+      console.warn('[GRMC] Unable to persist weekly challenges', error);
+    }
+  }
+
+  function ensureWeeklyChallengesState(now = Date.now()) {
+    window.GRMCState = window.GRMCState || {};
+    const stored = window.GRMCState.weeklyChallengesState || loadStoredWeeklyChallenges();
+    let normalized = normalizeWeeklyChallengeState(stored, now);
+    if (normalized.resetAt <= now) {
+      normalized = buildDefaultWeeklyChallengeState(now);
+    }
+    const current = window.GRMCState.weeklyChallengesState;
+    const changed =
+      !current ||
+      current.resetAt !== normalized.resetAt ||
+      current.version !== normalized.version ||
+      current.challenges?.length !== normalized.challenges.length;
+    window.GRMCState.weeklyChallengesState = normalized;
+    if (changed) {
+      saveWeeklyChallengesState(normalized);
+    }
+    return normalized;
+  }
+
+  function emitChallengeUpdate() {
+    const state = window.GRMCState?.weeklyChallengesState;
+    if (!state || typeof window.emitWalletEvent !== 'function') return;
+    window.emitWalletEvent('challenge-update', { weekly: state });
+  }
+
+  function hasClaimableWeeklyRewards() {
+    const state = ensureWeeklyChallengesState();
+    return state.challenges.some((challenge) => (challenge.claimable || 0) > 0);
+  }
+
+  function finalizeChallengeCompletion(challenge, { silent = false } = {}) {
+    if (!challenge) return false;
+    if (challenge.progress < challenge.target) {
+      return false;
+    }
+    const wasClaimable = challenge.claimable || 0;
+    if (!challenge.completedAt) {
+      challenge.completedAt = Date.now();
+    }
+    if (!challenge.claimedAt) {
+      challenge.claimable = challenge.reward;
+      if (!silent && challenge.reward > 0 && wasClaimable < challenge.reward) {
+        showToast(
+          `${challenge.title} complete! Claim ${challenge.reward} GRMC from the rewards hub.`,
+          'success',
+          4200
+        );
+      }
+    }
+    return challenge.claimable > wasClaimable;
+  }
+
+  function incrementWeeklyChallenge(challengeId, amount = 1, options = {}) {
+    const state = ensureWeeklyChallengesState();
+    const challenge = state.challenges.find((entry) => entry.id === challengeId);
+    if (!challenge) return;
+    if (challenge.claimedAt) return;
+    const previous = challenge.progress || 0;
+    const next = clampNumber(previous + amount, 0, challenge.target);
+    if (next === previous) {
+      return;
+    }
+    challenge.progress = next;
+    challenge.updatedAt = Date.now();
+    if (challenge.progress >= challenge.target) {
+      finalizeChallengeCompletion(challenge, options);
+    }
+    saveWeeklyChallengesState(state);
+    emitChallengeUpdate();
+  }
+
+  function completeWeeklyChallenge(challengeId, options = {}) {
+    const state = ensureWeeklyChallengesState();
+    const challenge = state.challenges.find((entry) => entry.id === challengeId);
+    if (!challenge) return;
+    if (challenge.claimedAt) return;
+    challenge.progress = challenge.target;
+    challenge.updatedAt = Date.now();
+    finalizeChallengeCompletion(challenge, options);
+    saveWeeklyChallengesState(state);
+    emitChallengeUpdate();
+  }
+
+  function getWeeklyClaimableTotal() {
+    const state = ensureWeeklyChallengesState();
+    return state.challenges.reduce((sum, challenge) => sum + (challenge.claimable || 0), 0);
+  }
+
+  function handleOrderChallengeProgress(recipe) {
+    if (!recipe) return;
+    if (recipe.difficulty === 'medium') {
+      incrementWeeklyChallenge('weekly_medium_plate_master', 1);
+    }
+  }
+
+  function handleServiceChallengeProgress(summary) {
+    if (!summary) return;
+    const { failed = 0, score = 0, completed = 0 } = summary;
+    if (failed === 0 && completed > 0) {
+      completeWeeklyChallenge('weekly_flawless_shift');
+    }
+    if (score >= 180) {
+      completeWeeklyChallenge('weekly_score_chaser');
+    }
+  }
+
+  function formatResetCountdown(resetAt) {
+    const now = Date.now();
+    const diff = Math.max(0, resetAt - now);
+    const days = Math.floor(diff / (24 * 60 * 60 * 1000));
+    const hours = Math.floor((diff % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+    const minutes = Math.floor((diff % (60 * 60 * 1000)) / (60 * 1000));
+    if (days > 0) {
+      return `${days}d ${hours}h`;
+    }
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    const mins = Math.max(1, Math.ceil(diff / (60 * 1000)));
+    return `${mins}m`;
+  }
+
+  async function claimWeeklyChallenge(challengeId) {
+    const state = ensureWeeklyChallengesState();
+    const challenge = state.challenges.find((entry) => entry.id === challengeId);
+    if (!challenge) {
+      showToast('Challenge not found.', 'error');
+      return false;
+    }
+    if (!challenge.claimable) {
+      showToast('No GRMC is ready to claim for that challenge yet.', 'warning');
+      return false;
+    }
+
+    let success = false;
+    const sessionJwt = window.GRMCState?.sessionJwt;
+    if (API_BASE && sessionJwt) {
+      try {
+        const response = await fetch(`${API_BASE}/challenges/claim`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${sessionJwt}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ challengeId, progress: challenge.progress }),
+        });
+        if (!response.ok) {
+          const text = await response.text();
+          console.warn('[GRMC] Challenge claim failed', text);
+          showToast('Unable to submit your claim right now. Try again shortly.', 'error');
+          return false;
+        }
+        const payload = await response.json();
+        success = Boolean(payload?.ok);
+      } catch (error) {
+        console.warn('[GRMC] Challenge claim error', error);
+        showToast('Network issue submitting claim. Please retry.', 'error');
+        return false;
+      }
+    } else {
+      success = true;
+    }
+
+    if (!success) {
+      return false;
+    }
+
+    challenge.claimable = 0;
+    challenge.claimedAt = Date.now();
+    challenge.updatedAt = Date.now();
+    saveWeeklyChallengesState(state);
+    emitChallengeUpdate();
+    window.emitWalletEvent?.('challenge-claimed', { challengeId, reward: challenge.reward });
+    showToast(`Claim submitted! ${challenge.reward} GRMC will be paid out soon.`, 'success');
+    return true;
+  }
+
+  async function syncWeeklyChallengesFromServer() {
+    if (!API_BASE || !window.GRMCState?.sessionJwt) {
+      return ensureWeeklyChallengesState();
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/challenges/weekly`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${window.GRMCState.sessionJwt}`,
+        },
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        console.warn('[GRMC] Weekly challenges fetch failed', text);
+        return ensureWeeklyChallengesState();
+      }
+      const payload = await response.json();
+      const localState = ensureWeeklyChallengesState();
+      if (payload?.resetAt && Number(payload.resetAt) !== localState.resetAt) {
+        localState.resetAt = Number(payload.resetAt);
+      }
+      if (Array.isArray(payload?.challenges)) {
+        payload.challenges.forEach((serverChallenge) => {
+          const localChallenge = localState.challenges.find((entry) => entry.id === serverChallenge.id);
+          if (!localChallenge) return;
+          const serverProgress = Number(serverChallenge.progress) || 0;
+          const serverClaimable = Number(serverChallenge.claimable) || 0;
+          const serverClaimedAt = serverChallenge.claimedAt || null;
+          if (serverProgress > localChallenge.progress) {
+            localChallenge.progress = Math.min(localChallenge.target, serverProgress);
+            if (localChallenge.progress >= localChallenge.target && !localChallenge.claimedAt) {
+              localChallenge.claimable = Math.max(localChallenge.claimable, localChallenge.reward);
+            }
+          }
+          if (serverClaimable > localChallenge.claimable && !localChallenge.claimedAt) {
+            localChallenge.claimable = Math.min(serverClaimable, localChallenge.reward);
+          }
+          if (serverClaimedAt && !localChallenge.claimedAt) {
+            localChallenge.claimedAt = serverClaimedAt;
+            localChallenge.claimable = 0;
+          }
+        });
+      }
+      saveWeeklyChallengesState(localState);
+      emitChallengeUpdate();
+      return localState;
+    } catch (error) {
+      console.warn('[GRMC] Weekly challenge sync error', error);
+      return ensureWeeklyChallengesState();
+    }
+  }
+
+  function getLeaderboardRewardsState() {
+    ensureGlobalState();
+    window.GRMCState.leaderboardRewards = window.GRMCState.leaderboardRewards || {
+      available: 0,
+      lastFetched: 0,
+      lastUpdated: 0,
+    };
+    return window.GRMCState.leaderboardRewards;
+  }
+
+  function emitLeaderboardUpdate() {
+    if (typeof window.emitWalletEvent !== 'function') return;
+    window.emitWalletEvent('leaderboard-rewards', { rewards: getLeaderboardRewardsState() });
+  }
+
+  function hasClaimableLeaderboardRewards() {
+    const state = getLeaderboardRewardsState();
+    return (state.available || 0) > 0;
+  }
+
+  function hasAnyClaimableRewards() {
+    return hasClaimableWeeklyRewards() || hasClaimableLeaderboardRewards();
+  }
+
+  async function refreshLeaderboardRewards(options = {}) {
+    const { force = false } = options;
+    const state = getLeaderboardRewardsState();
+    const now = Date.now();
+    const sessionJwt = window.GRMCState?.sessionJwt;
+    if (!API_BASE || !sessionJwt) {
+      return state;
+    }
+    if (!force && now - (state.lastFetched || 0) < 60_000) {
+      return state;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/leaderboard/rewards`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${sessionJwt}`,
+        },
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        console.warn('[GRMC] Leaderboard rewards fetch failed', text);
+        return state;
+      }
+      const payload = await response.json();
+      state.available = Number(payload?.available) || 0;
+      state.lastFetched = now;
+      state.lastUpdated = now;
+      emitLeaderboardUpdate();
+    } catch (error) {
+      console.warn('[GRMC] Leaderboard reward fetch error', error);
+    }
+    return state;
+  }
+
+  async function claimLeaderboardRewards() {
+    const state = getLeaderboardRewardsState();
+    if (!state.available) {
+      showToast('No leaderboard payouts are ready to claim yet.', 'warning');
+      return false;
+    }
+
+    let success = false;
+    const sessionJwt = window.GRMCState?.sessionJwt;
+    if (API_BASE && sessionJwt) {
+      try {
+        const response = await fetch(`${API_BASE}/leaderboard/claim`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${sessionJwt}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ amount: state.available }),
+        });
+        if (!response.ok) {
+          const text = await response.text();
+          console.warn('[GRMC] Leaderboard claim failed', text);
+          showToast('Unable to claim leaderboard payout. Try again soon.', 'error');
+          return false;
+        }
+        const payload = await response.json();
+        success = Boolean(payload?.ok);
+      } catch (error) {
+        console.warn('[GRMC] Leaderboard claim error', error);
+        showToast('Network hiccup claiming payout. Please retry.', 'error');
+        return false;
+      }
+    } else {
+      success = true;
+    }
+
+    if (!success) {
+      return false;
+    }
+
+    const claimedAmount = state.available;
+    state.available = 0;
+    state.lastUpdated = Date.now();
+    emitLeaderboardUpdate();
+    window.emitWalletEvent?.('leaderboard-claimed', { amount: claimedAmount });
+    showToast(`Leaderboard payout of ${claimedAmount} GRMC queued for delivery!`, 'success');
+    return true;
+  }
 
   const BOOSTS = [
     {
@@ -244,10 +695,15 @@
       state.entitlements = loadObject(STORAGE_KEYS.entitlements);
     }
 
+    if (!state.leaderboardRewards) {
+      state.leaderboardRewards = { available: 0, lastFetched: 0, lastUpdated: 0 };
+    }
+
     return state;
   }
 
   ensureGlobalState();
+  ensureWeeklyChallengesState();
 
   const DIFFICULTY_POINTS = {
     easy: 6,
@@ -456,6 +912,8 @@
     shopContent: document.getElementById('shop-content'),
     cosmetics: document.getElementById('cosmetics-overlay'),
     cosmeticsContent: document.getElementById('cosmetics-content'),
+    rewards: document.getElementById('rewards-overlay'),
+    rewardsContent: document.getElementById('rewards-content'),
   };
 
   const overlayState = {
@@ -646,6 +1104,178 @@
     if (overlayRefs.cosmetics) {
       overlayRefs.cosmetics.hidden = false;
     }
+  }
+
+  function renderRewardsOverlay() {
+    ensureWeeklyChallengesState();
+    const container = overlayRefs.rewardsContent;
+    if (!container) return;
+    container.innerHTML = '';
+
+    const weeklyState = window.GRMCState.weeklyChallengesState;
+    const claimableTotal = getWeeklyClaimableTotal();
+
+    const weeklySection = document.createElement('section');
+    weeklySection.className = 'grmc-rewards-section';
+
+    const weeklyHeader = document.createElement('header');
+    weeklyHeader.className = 'grmc-rewards-section__header';
+    const weeklyTitle = document.createElement('h3');
+    weeklyTitle.textContent = 'Weekly Challenges';
+    const resetTag = document.createElement('span');
+    resetTag.className = 'grmc-tag';
+    resetTag.textContent = `Resets in ${formatResetCountdown(weeklyState.resetAt)}`;
+    weeklyHeader.appendChild(weeklyTitle);
+    weeklyHeader.appendChild(resetTag);
+
+    const weeklySummary = document.createElement('p');
+    weeklySummary.className = 'grmc-rewards-section__summary';
+    weeklySummary.textContent = `Claimable this week: ${claimableTotal} GRMC`;
+
+    const weeklyGrid = document.createElement('div');
+    weeklyGrid.className = 'grmc-rewards-grid';
+
+    weeklyState.challenges.forEach((challenge) => {
+      const card = document.createElement('article');
+      card.className = 'grmc-reward-card';
+
+      const title = document.createElement('h4');
+      title.textContent = challenge.title;
+      const desc = document.createElement('p');
+      desc.className = 'grmc-reward-card__desc';
+      desc.textContent = challenge.description;
+
+      const progressLabel = document.createElement('div');
+      progressLabel.className = 'grmc-reward-card__progress-label';
+      progressLabel.textContent = `${challenge.progress}/${challenge.target} completed`;
+
+      const progressBar = document.createElement('div');
+      progressBar.className = 'grmc-progress';
+      const progressFill = document.createElement('div');
+      progressFill.className = 'grmc-progress__fill';
+      const ratio = challenge.target > 0 ? (challenge.progress / challenge.target) * 100 : 0;
+      progressFill.style.width = `${Math.min(100, Math.max(0, ratio))}%`;
+      progressBar.appendChild(progressFill);
+
+      const rewardTag = document.createElement('span');
+      rewardTag.className = 'grmc-tag';
+      rewardTag.textContent = `${challenge.reward} GRMC`;
+
+      const status = document.createElement('div');
+      status.className = 'grmc-reward-card__status';
+      if (challenge.claimable) {
+        status.textContent = 'Reward ready to claim';
+      } else if (challenge.claimedAt) {
+        status.textContent = 'Claimed';
+      } else {
+        status.textContent = 'Keep playing to earn this reward';
+      }
+
+      const actionButton = document.createElement('button');
+      actionButton.className = 'grmc-reward-card__button';
+      if (challenge.claimable) {
+        actionButton.textContent = `Claim ${challenge.reward} GRMC`;
+        actionButton.addEventListener('click', async () => {
+          actionButton.disabled = true;
+          const ok = await claimWeeklyChallenge(challenge.id);
+          if (!ok) {
+            actionButton.disabled = false;
+          }
+          renderRewardsOverlay();
+        });
+      } else {
+        actionButton.textContent = challenge.claimedAt ? 'Reward claimed' : 'Reward locked';
+        actionButton.disabled = true;
+        actionButton.classList.add('grmc-reward-card__button--disabled');
+      }
+
+      card.appendChild(title);
+      card.appendChild(desc);
+      card.appendChild(progressLabel);
+      card.appendChild(progressBar);
+      card.appendChild(rewardTag);
+      card.appendChild(status);
+      card.appendChild(actionButton);
+      weeklyGrid.appendChild(card);
+    });
+
+    weeklySection.appendChild(weeklyHeader);
+    weeklySection.appendChild(weeklySummary);
+    weeklySection.appendChild(weeklyGrid);
+
+    const leaderboardSection = document.createElement('section');
+    leaderboardSection.className = 'grmc-rewards-section';
+
+    const leaderboardHeader = document.createElement('header');
+    leaderboardHeader.className = 'grmc-rewards-section__header';
+    const leaderboardTitle = document.createElement('h3');
+    leaderboardTitle.textContent = 'Leaderboard Rewards';
+    leaderboardHeader.appendChild(leaderboardTitle);
+
+    const leaderboardSummary = document.createElement('p');
+    leaderboardSummary.className = 'grmc-rewards-section__summary';
+    const leaderboardState = getLeaderboardRewardsState();
+    leaderboardSummary.textContent = `Current payout available: ${leaderboardState.available || 0} GRMC`;
+
+    const leaderboardActions = document.createElement('div');
+    leaderboardActions.className = 'grmc-rewards-actions';
+
+    const refreshButton = document.createElement('button');
+    refreshButton.className = 'grmc-reward-card__button';
+    refreshButton.textContent = 'Refresh standings';
+    refreshButton.addEventListener('click', async () => {
+      refreshButton.disabled = true;
+      await refreshLeaderboardRewards({ force: true });
+      refreshButton.disabled = false;
+      renderRewardsOverlay();
+    });
+
+    const claimLeaderboardButton = document.createElement('button');
+    claimLeaderboardButton.className = 'grmc-reward-card__button';
+    claimLeaderboardButton.textContent = leaderboardState.available
+      ? `Claim ${leaderboardState.available} GRMC`
+      : 'No payout available yet';
+    if (leaderboardState.available) {
+      claimLeaderboardButton.addEventListener('click', async () => {
+        claimLeaderboardButton.disabled = true;
+        const ok = await claimLeaderboardRewards();
+        if (!ok) {
+          claimLeaderboardButton.disabled = false;
+        }
+        renderRewardsOverlay();
+      });
+    } else {
+      claimLeaderboardButton.disabled = true;
+      claimLeaderboardButton.classList.add('grmc-reward-card__button--disabled');
+    }
+
+    leaderboardActions.appendChild(refreshButton);
+    leaderboardActions.appendChild(claimLeaderboardButton);
+
+    const leaderboardHelp = document.createElement('p');
+    leaderboardHelp.className = 'grmc-rewards-section__help';
+    leaderboardHelp.textContent = 'Place on the weekly leaderboard to earn GRMC payouts backed by the revenue vault.';
+
+    leaderboardSection.appendChild(leaderboardHeader);
+    leaderboardSection.appendChild(leaderboardSummary);
+    leaderboardSection.appendChild(leaderboardActions);
+    leaderboardSection.appendChild(leaderboardHelp);
+
+    container.appendChild(weeklySection);
+    container.appendChild(leaderboardSection);
+  }
+
+  function openRewardsOverlay() {
+    renderRewardsOverlay();
+    if (overlayRefs.rewards) {
+      overlayRefs.rewards.hidden = false;
+    }
+    Promise.all([
+      syncWeeklyChallengesFromServer(),
+      refreshLeaderboardRewards({ force: true }),
+    ]).then(() => {
+      renderRewardsOverlay();
+    });
   }
 
   async function requestTournamentEntry(preferredModeId) {
@@ -1039,6 +1669,33 @@
       createMenuButton('Cosmetics Locker', menuYStart + (LEVELS.length + 2) * menuSpacing, () => {
         openCosmeticsOverlay();
       });
+
+      const rewardsRow = menuYStart + (LEVELS.length + 3) * menuSpacing;
+      const rewardsLabel = () => (hasAnyClaimableRewards() ? 'Rewards Hub (Claim!)' : 'Earning & Rewards');
+      this.rewardsButton = createMenuButton(rewardsLabel(), rewardsRow, () => {
+        openRewardsOverlay();
+      });
+
+      this.updateRewardsLabel = () => {
+        if (this.rewardsButton) {
+          this.rewardsButton.setText(rewardsLabel());
+        }
+      };
+      this.updateRewardsLabel();
+
+      syncWeeklyChallengesFromServer().then(() => this.updateRewardsLabel());
+      refreshLeaderboardRewards();
+
+      if (typeof window.onWalletEvent === 'function') {
+        const offChallenge = window.onWalletEvent('challenge-update', () => this.updateRewardsLabel());
+        const offChallengeClaim = window.onWalletEvent('challenge-claimed', () => this.updateRewardsLabel());
+        const offLeaderboard = window.onWalletEvent('leaderboard-rewards', () => this.updateRewardsLabel());
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+          offChallenge?.();
+          offChallengeClaim?.();
+          offLeaderboard?.();
+        });
+      }
     }
 
     startLevel(levelIndex, options = {}) {
@@ -1877,6 +2534,7 @@
       this.completedOrders += 1;
       this.showFloatingText(`+${points}`, this.player.x, this.player.y - 80, '#b4ff9c');
       this.events.emit('score-changed', this.score);
+      handleOrderChallengeProgress(order.recipe);
 
       Phaser.Utils.Array.Remove(this.activeOrders, order);
       this.events.emit('orders-updated', this.activeOrders);
@@ -2054,6 +2712,13 @@
         totalLevels: LEVELS.length,
         levelName: this.levelConfig.name,
         tournamentMode: this.tournamentMode?.id || null,
+      });
+      handleServiceChallengeProgress({
+        score: this.score,
+        completed: this.completedOrders,
+        failed: this.failedOrders,
+        duration: this.levelDuration,
+        levelIndex: this.levelIndex,
       });
       this.showFloatingText('Service Complete!', GAME_WIDTH / 2, GAME_HEIGHT / 2 - 40, '#fff6cf');
     }

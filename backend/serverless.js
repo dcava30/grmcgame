@@ -7,6 +7,44 @@ const bs58 = require('bs58');
 const nonceStore = new Map();
 const purchaseIntents = new Map();
 const sessionStore = new Map();
+const challengeStore = new Map();
+const leaderboardRewards = new Map();
+
+const WEEKLY_CHALLENGE_BLUEPRINT = [
+  { id: 'weekly_medium_plate_master', target: 12, reward: 15 },
+  { id: 'weekly_flawless_shift', target: 1, reward: 20 },
+  { id: 'weekly_score_chaser', target: 1, reward: 18 },
+];
+
+const WEEKLY_RESET_MS = 7 * 24 * 60 * 60 * 1000;
+
+function buildChallengeState(now = Date.now()) {
+  return {
+    resetAt: now + WEEKLY_RESET_MS,
+    challenges: WEEKLY_CHALLENGE_BLUEPRINT.map((entry) => ({
+      ...entry,
+      progress: 0,
+      claimedAt: null,
+      claimable: 0,
+    })),
+  };
+}
+
+function ensureChallengeState(publicKey, now = Date.now()) {
+  let state = challengeStore.get(publicKey);
+  if (!state || state.resetAt <= now) {
+    state = buildChallengeState(now);
+    challengeStore.set(publicKey, state);
+  }
+  return state;
+}
+
+function ensureLeaderboardRewards(publicKey) {
+  if (!leaderboardRewards.has(publicKey)) {
+    leaderboardRewards.set(publicKey, { available: 0, lastUpdated: Date.now() });
+  }
+  return leaderboardRewards.get(publicKey);
+}
 
 const app = express();
 app.use(express.json());
@@ -76,6 +114,37 @@ app.post('/scores/submit', requireSession, (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/challenges/weekly', requireSession, (req, res) => {
+  const state = ensureChallengeState(req.session.publicKey);
+  res.json(state);
+});
+
+app.post('/challenges/claim', requireSession, (req, res) => {
+  const { challengeId, progress } = req.body || {};
+  if (!challengeId) {
+    return res.status(400).json({ error: 'challengeId required' });
+  }
+
+  const state = ensureChallengeState(req.session.publicKey);
+  const challenge = state.challenges.find((entry) => entry.id === challengeId);
+  if (!challenge) {
+    return res.status(404).json({ error: 'Challenge not found' });
+  }
+  const reportedProgress = Number(progress) || 0;
+  if (reportedProgress < challenge.target) {
+    return res.status(400).json({ error: 'Challenge not complete' });
+  }
+  if (challenge.claimedAt) {
+    return res.status(409).json({ error: 'Challenge already claimed' });
+  }
+
+  challenge.progress = Math.max(challenge.progress, reportedProgress);
+  challenge.claimedAt = Date.now();
+  challenge.claimable = 0;
+
+  res.json({ ok: true, reward: challenge.reward });
+});
+
 app.post('/purchase/intent', requireSession, (req, res) => {
   const { itemId, price } = req.body || {};
   const intentId = crypto.randomUUID();
@@ -107,6 +176,22 @@ app.post('/purchase/confirm', requireSession, (req, res) => {
 app.get('/leaderboard/top', (req, res) => {
   // Replace with actual data source.
   res.json({ entries: [] });
+});
+
+app.get('/leaderboard/rewards', requireSession, (req, res) => {
+  const entry = ensureLeaderboardRewards(req.session.publicKey);
+  res.json({ available: entry.available, lastUpdated: entry.lastUpdated });
+});
+
+app.post('/leaderboard/claim', requireSession, (req, res) => {
+  const entry = ensureLeaderboardRewards(req.session.publicKey);
+  if (!entry.available) {
+    return res.status(400).json({ error: 'No leaderboard rewards available' });
+  }
+  const amount = entry.available;
+  entry.available = 0;
+  entry.lastUpdated = Date.now();
+  res.json({ ok: true, amount });
 });
 
 app.post('/vault/telemetry', requireSession, (req, res) => {
