@@ -19,12 +19,15 @@
     return () => walletEventTarget.removeEventListener(type, handler);
   };
 
+  window.dispatchEvent(new CustomEvent('grmc-wallet-api-ready'));
+
   const initialState = {
     isHolder: false,
     trialMode: false,
     publicKey: null,
     sessionJwt: null,
     lastBalanceCheck: null,
+    chefcoins: 0,
   };
 
   window.GRMCState = { ...initialState, ...(window.GRMCState || {}) };
@@ -35,11 +38,99 @@
     minTokenBalance: 1,
     commitment: 'confirmed',
     autoConnectTrusted: true,
+    devWalletAddress: '9Ctm5fCGoLrdXVZAkdKNBZnkf3YF5qD4Ejjdge4cmaWX',
+    swapTaxBps: 300,
+    minSwapAmount: 1,
   };
 
   const config = { ...defaultConfig, ...(window.GRMC_GATE_CONFIG || {}) };
 
+  config.devWalletAddress = typeof config.devWalletAddress === 'string' && config.devWalletAddress
+    ? config.devWalletAddress
+    : defaultConfig.devWalletAddress;
+  const parsedSwapBps = Number(config.swapTaxBps);
+  config.swapTaxBps = Number.isFinite(parsedSwapBps) ? Math.max(0, Math.floor(parsedSwapBps)) : defaultConfig.swapTaxBps;
+  const parsedMinSwap = Number(config.minSwapAmount);
+  config.minSwapAmount = Number.isFinite(parsedMinSwap)
+    ? Math.max(1, Math.floor(parsedMinSwap))
+    : defaultConfig.minSwapAmount;
+
+  function applyStaticState() {
+    window.GRMCState.swapTaxBps = config.swapTaxBps;
+    window.GRMCState.minSwapAmount = config.minSwapAmount;
+    window.GRMCState.devWalletAddress = config.devWalletAddress;
+  }
+
+  applyStaticState();
+  window.emitWalletEvent('swap-config', {
+    swapTaxBps: config.swapTaxBps,
+    minSwapAmount: config.minSwapAmount,
+    devWalletAddress: config.devWalletAddress,
+  });
+
   let hasVerifiedToken = false;
+
+  let cachedConnection = null;
+  let cachedMintKey = null;
+
+  function getConnection() {
+    if (!ensureWeb3Ready()) {
+      return null;
+    }
+    if (!cachedConnection) {
+      const { Connection } = solanaWeb3;
+      cachedConnection = new Connection(config.rpcEndpoint, config.commitment);
+    }
+    return cachedConnection;
+  }
+
+  function getMintPublicKey() {
+    if (!ensureWeb3Ready()) {
+      return null;
+    }
+    if (!cachedMintKey) {
+      const { PublicKey } = solanaWeb3;
+      if (!config.mintAddress) {
+        return null;
+      }
+      cachedMintKey = new PublicKey(config.mintAddress);
+    }
+    return cachedMintKey;
+  }
+
+  function resetCachedConnection() {
+    cachedConnection = null;
+    cachedMintKey = null;
+  }
+
+  window.GRMCWallet = {
+    get publicKey() {
+      return window.GRMCState?.publicKey || null;
+    },
+    getConfig() {
+      return { ...config };
+    },
+    getConnection,
+    getMintPublicKey,
+    async refreshGrmcBalance(options = {}) {
+      const emitEvents = options.emitEvents !== false;
+      const target = window.GRMCState?.publicKey;
+      if (!target) {
+        return null;
+      }
+      return updateGrmcBalance(target, { emitEvents });
+    },
+    async fetchBalanceFor(publicKeyString, options = {}) {
+      if (!publicKeyString) {
+        return null;
+      }
+      const emitEvents = options.emitEvents !== false;
+      return updateGrmcBalance(publicKeyString, { emitEvents });
+    },
+    getCachedBalance() {
+      return window.GRMCState?.lastBalanceCheck || null;
+    },
+  };
 
   const providerCandidates = () => {
     const list = [];
@@ -313,16 +404,28 @@
     return true;
   }
 
-  async function verifyGatedToken(publicKeyString) {
+  async function updateGrmcBalance(publicKeyString, { emitEvents = true } = {}) {
     try {
       if (!ensureWeb3Ready()) {
-        return false;
+        return {
+          totalBalance: 0,
+          foundAccounts: false,
+          meetsRequirement: false,
+        };
       }
 
-      const { Connection, PublicKey } = solanaWeb3;
-      const connection = new Connection(config.rpcEndpoint, config.commitment);
+      const connection = getConnection();
+      if (!connection) {
+        throw new Error('Solana RPC unavailable');
+      }
+
+      const { PublicKey } = solanaWeb3;
       const owner = new PublicKey(publicKeyString);
-      const mintKey = new PublicKey(config.mintAddress);
+      const mintKey = getMintPublicKey();
+      if (!mintKey) {
+        throw new Error('GRMC mint not configured');
+      }
+
       const configuredMinimum = Number(config.minTokenBalance);
       const minimumBalance = Number.isFinite(configuredMinimum) ? configuredMinimum : 1;
 
@@ -353,8 +456,10 @@
         return 0;
       };
 
-      const accounts = await connection.getParsedTokenAccountsByOwner(owner, { mint: mintKey });
-      let matchingAccounts = (accounts?.value || []).filter(matchesMint);
+      const directResponse = await connection.getParsedTokenAccountsByOwner(owner, { mint: mintKey });
+      let matchingAccounts = Array.isArray(directResponse?.value)
+        ? directResponse.value.filter(matchesMint)
+        : [];
 
       if (!matchingAccounts.length) {
         const programResults = await Promise.allSettled([
@@ -367,37 +472,64 @@
           .flatMap((result) => (result.value?.value || []).filter(matchesMint));
       }
 
-      if (!matchingAccounts.length) {
-        window.GRMCState.lastBalanceCheck = {
-          totalBalance: 0,
-          foundAccounts: false,
-          meetsRequirement: false,
-          timestamp: Date.now(),
-        };
-        return false;
-      }
-
       const totalBalance = matchingAccounts.reduce((sum, account) => sum + parseBalance(account), 0);
       const meetsRequirement = totalBalance >= minimumBalance;
-      window.GRMCState.lastBalanceCheck = {
+
+      const state = {
         totalBalance,
-        foundAccounts: true,
+        foundAccounts: matchingAccounts.length > 0,
         meetsRequirement,
         timestamp: Date.now(),
+        accountCount: matchingAccounts.length,
       };
-      return meetsRequirement;
+
+      window.GRMCState.lastBalanceCheck = state;
+
+      if (emitEvents) {
+        const formattedBalance = totalBalance.toLocaleString('en-US', { maximumFractionDigits: 6 });
+        window.emitWalletEvent('balance-update', {
+          totalBalance,
+          formattedBalance,
+          meetsRequirement,
+          source: 'grmc',
+        });
+        window.emitWalletEvent('grmc-balance', {
+          totalBalance,
+          meetsRequirement,
+          accountCount: matchingAccounts.length,
+        });
+      }
+
+      return state;
     } catch (error) {
       console.error('[GRMC Gate] Balance check failed:', error);
-      window.GRMCState.lastBalanceCheck = {
+      const state = {
         totalBalance: 0,
         foundAccounts: false,
         meetsRequirement: false,
         timestamp: Date.now(),
         error: error?.message || 'Unknown error',
       };
-      showError('Unable to verify GRMC holdings right now. Please try again later.');
-      return false;
+      window.GRMCState.lastBalanceCheck = state;
+      if (emitEvents) {
+        window.emitWalletEvent('balance-update', {
+          totalBalance: 0,
+          formattedBalance: '0',
+          meetsRequirement: false,
+          source: 'grmc',
+          error: error?.message || 'Unknown error',
+        });
+      }
+      return state;
     }
+  }
+
+  async function verifyGatedToken(publicKeyString) {
+    const result = await updateGrmcBalance(publicKeyString, { emitEvents: true });
+    if (result.error) {
+      showError('Unable to verify GRMC holdings right now. Please try again later.');
+    }
+    return result.meetsRequirement;
   }
 
   function handleWalletEvents() {
@@ -409,8 +541,10 @@
     provider.on?.('accountChanged', () => {
       window.GRMCState.isHolder = false;
       window.GRMCState.sessionJwt = null;
+      window.GRMCState.chefcoins = 0;
       applyAccessStyles();
       window.emitWalletEvent('access-update', { isHolder: false, trialMode: window.GRMCState.trialMode });
+      window.emitWalletEvent('chefcoins-update', { chefcoins: 0 });
       if (!overlay.hidden) {
         resetGateMessaging();
         setStatus('Wallet account changed. Please reconnect.');
@@ -420,6 +554,7 @@
         resetGateMessaging();
         setStatus('Wallet changed. Please reconnect to continue.');
       }
+      resetCachedConnection();
     });
 
     provider.on?.('disconnect', () => {
@@ -427,8 +562,11 @@
       setStatus('Wallet disconnected. Reconnect to keep playing.');
       resetGateMessaging();
       window.GRMCState = { ...initialState };
+      applyStaticState();
       applyAccessStyles();
       window.emitWalletEvent('disconnected', {});
+      window.emitWalletEvent('chefcoins-update', { chefcoins: 0 });
+      window.emitWalletEvent('grmc-balance', { totalBalance: 0, meetsRequirement: false, accountCount: 0 });
     });
   }
 
