@@ -124,6 +124,22 @@ proves it holds GRMC. To make it production-ready:
 5. Upload the updated bundle to your host. When players click the link on your website, the new tab will immediately show the
    wallet prompt, validate the GRMC balance, and only then boot the kitchen.
 
+#### Backend & converter configuration
+
+This repository ships with a lightweight Express backend (`backend/serverless.js`) that tracks ChefCoins and handles GRMC↔ChefCoins
+swaps plus on-chain purchase verification. To run it locally:
+
+1. Copy [`backend/.env.example`](./backend/.env.example) to `backend/.env` and fill in the GRMC mint, optional RPC URL, and
+   treasury key material. The developer wallet address defaults to `9Ctm5fCGoLrdXVZAkdKNBZnkf3YF5qD4Ejjdge4cmaWX`.
+2. Install dependencies (`npm install`) and start both the backend and static web server with `npm run dev` (or `npm run dev:api`
+   if you are hosting the frontend elsewhere).
+3. In [`index.html`](./index.html) update `window.GRMC_GATE_CONFIG.apiBase` to point at your backend URL (for example,
+   `http://localhost:8787` during development) and ensure `mintAddress` matches the `GRMC_MINT` environment variable. You can also
+   tune `swapTaxBps`, `minSwapAmount`, and `devWalletAddress` from the same config block.
+
+Conversions run at a 1:1 rate with a configurable tax expressed in basis points. Players pay normal Solana network fees when they
+sign transfers in their wallet.
+
 ### Wallet-connected leaderboard flow
 
 1. Add a persistent **Connect Wallet** button to the HTML overlay so desktop and mobile players can authenticate with Phantom,
