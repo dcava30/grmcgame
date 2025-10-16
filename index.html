@@ -8,6 +8,9 @@
   </head>
   <body>
     <main id="game-root" aria-label="Gordon Ramsay's Minecraft kitchen"></main>
+    <button id="currency-open-button" class="currency-open-button" type="button" aria-haspopup="dialog">
+      Wallet &amp; Currency
+    </button>
     <div id="wallet-gate-overlay" role="dialog" aria-modal="true" aria-labelledby="gate-title">
       <div class="wallet-gate__panel">
         <h1 id="gate-title">Connect Your Solana Wallet</h1>
@@ -26,6 +29,7 @@
         </div>
         <div id="wallet-loading" class="wallet-gate__loading" aria-live="polite" hidden>Verifying GRMC balance…</div>
         <div id="wallet-status" class="wallet-gate__status" aria-live="polite"></div>
+        <p id="wallet-cluster-indicator" class="wallet-gate__cluster" aria-live="polite"></p>
         <div id="wallet-error" class="wallet-gate__error" role="alert" hidden></div>
         <p class="wallet-gate__helper">
           Don’t have GRMC yet? <a href="https://raydium.io/swap/?inputMint=sol&amp;outputMint=6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK&amp;referrer=7i5775tjSXaXut3KtahGmFTEuqY6TB3dS2BgDARdRYAd" target="_blank" rel="noreferrer">Buy GRMC on Raydium</a>
@@ -46,8 +50,12 @@
       window.GRMC_GATE_CONFIG = {
         mintAddress: '6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK',
         rpcEndpoint: 'https://api.mainnet-beta.solana.com',
+        cluster: 'mainnet-beta',
         minTokenBalance: 1,
         apiBase: 'https://api.example.com',
+        devWalletAddress: '9Ctm5fCGoLrdXVZAkdKNBZnkf3YF5qD4Ejjdge4cmaWX',
+        swapTaxBps: 300,
+        minSwapAmount: 1,
       };
     </script>
     <div id="shop-overlay" class="grmc-overlay" role="dialog" aria-modal="true" aria-labelledby="shop-title" hidden>
@@ -89,6 +97,51 @@
           <button type="button" class="grmc-overlay__close" data-close-overlay>&times;</button>
         </div>
         <div class="grmc-overlay__content" id="rewards-content" aria-live="polite"></div>
+      </div>
+    </div>
+    <div
+      id="currency-overlay"
+      class="grmc-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="currency-title"
+      hidden
+    >
+      <div class="grmc-overlay__panel currency-overlay__panel">
+        <div class="grmc-overlay__header">
+          <h2 id="currency-title">Wallet &amp; Currency</h2>
+          <span id="currency-cluster-indicator" class="currency-cluster-indicator" aria-live="polite"></span>
+          <button type="button" class="grmc-overlay__close" data-close-overlay>&times;</button>
+        </div>
+        <section class="currency-balances" aria-live="polite">
+          <div class="currency-balance__row">
+            <span class="currency-balance__label">Wallet:</span>
+            <span id="currency-wallet-address" class="currency-balance__value">Not connected</span>
+          </div>
+          <div class="currency-balance__row">
+            <span class="currency-balance__label">GRMC (on-chain):</span>
+            <span id="currency-grmc-balance" class="currency-balance__value">0</span>
+          </div>
+          <div class="currency-balance__row">
+            <span class="currency-balance__label">ChefCoins (off-chain):</span>
+            <span id="currency-chefcoins-balance" class="currency-balance__value">0</span>
+          </div>
+        </section>
+        <section class="currency-actions">
+          <button id="currency-open-grmc-to-chef" class="currency-action-button" type="button">
+            Convert GRMC → ChefCoins
+          </button>
+          <button id="currency-open-chef-to-grmc" class="currency-action-button" type="button">
+            Convert ChefCoins → GRMC
+          </button>
+        </section>
+        <section id="currency-converter" class="currency-converter" aria-live="polite"></section>
+        <div id="currency-diagnostics" class="currency-diagnostics" hidden>
+          <details id="currency-diagnostics-details">
+            <summary>Why am I seeing 0 GRMC?</summary>
+            <ul id="currency-diagnostics-list" class="currency-diagnostics__list"></ul>
+          </details>
+        </div>
       </div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js" integrity="sha256-ONKM0xPNW3HIjh//ZQzQpLCPOfmU52nlFqYMiEa3OcM=" crossorigin="anonymous"></script>
