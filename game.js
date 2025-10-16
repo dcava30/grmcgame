@@ -67,6 +67,35 @@
     return `${address.slice(0, chars)}…${address.slice(-chars)}`;
   }
 
+  function inferClusterFromEndpoint(endpoint, fallback = 'mainnet-beta') {
+    if (!endpoint || typeof endpoint !== 'string') {
+      return fallback;
+    }
+    const normalized = endpoint.toLowerCase();
+    if (normalized.includes('devnet')) {
+      return 'devnet';
+    }
+    if (normalized.includes('testnet')) {
+      return 'testnet';
+    }
+    if (normalized.includes('localhost') || normalized.includes('127.0.0.1')) {
+      return 'localnet';
+    }
+    return fallback;
+  }
+
+  function getConfiguredCluster() {
+    const stateCluster = window.GRMCState?.cluster;
+    if (typeof stateCluster === 'string' && stateCluster.trim()) {
+      return stateCluster.trim();
+    }
+    const configCluster = window.GRMC_GATE_CONFIG?.cluster;
+    if (typeof configCluster === 'string' && configCluster.trim()) {
+      return configCluster.trim();
+    }
+    return inferClusterFromEndpoint(window.GRMC_GATE_CONFIG?.rpcEndpoint);
+  }
+
   const currencyStore = {
     walletAddress: window.GRMCState?.publicKey || null,
     grmcBalance: window.GRMCState?.lastBalanceCheck?.totalBalance || 0,
@@ -77,6 +106,8 @@
     chefToGrmcDisabledReason: '',
     busy: false,
     mode: null,
+    diagnostics: window.GRMCState?.diagnostics || null,
+    cluster: getConfiguredCluster(),
   };
 
   function getSwapConfig() {
@@ -1127,6 +1158,10 @@
     chefcoinsBalance: document.getElementById('currency-chefcoins-balance'),
     grmcToChefButton: document.getElementById('currency-open-grmc-to-chef'),
     chefToGrmcButton: document.getElementById('currency-open-chef-to-grmc'),
+    clusterIndicator: document.getElementById('currency-cluster-indicator'),
+    diagnosticsContainer: document.getElementById('currency-diagnostics'),
+    diagnosticsList: document.getElementById('currency-diagnostics-list'),
+    diagnosticsDetails: document.getElementById('currency-diagnostics-details'),
   };
 
   const overlayState = {
@@ -1158,6 +1193,17 @@
       currencyUI.walletAddress.textContent = label;
       currencyUI.walletAddress.title = address || 'Connect wallet to manage currency.';
     }
+    const clusterLabel = getConfiguredCluster();
+    currencyStore.cluster = clusterLabel;
+    if (currencyUI.clusterIndicator) {
+      if (clusterLabel) {
+        currencyUI.clusterIndicator.textContent = `Cluster: ${clusterLabel}`;
+        currencyUI.clusterIndicator.hidden = false;
+      } else {
+        currencyUI.clusterIndicator.textContent = '';
+        currencyUI.clusterIndicator.hidden = true;
+      }
+    }
     if (currencyUI.grmcBalance) {
       currencyUI.grmcBalance.textContent = formatTokenAmount(currencyStore.grmcBalance, {
         fractionDigits: 6,
@@ -1169,6 +1215,7 @@
       });
     }
     updateCurrencyButtons();
+    renderBalanceDiagnostics();
   }
 
   function updateCurrencyButtons() {
@@ -1200,6 +1247,73 @@
     }
   }
 
+  function renderBalanceDiagnostics() {
+    const container = currencyUI.diagnosticsContainer;
+    if (!container) return;
+
+    const diagnostics = currencyStore.diagnostics || window.GRMCState?.diagnostics || null;
+    const hasWallet = Boolean(window.GRMCState?.publicKey);
+    const zeroBalance = !Number.isFinite(currencyStore.grmcBalance) || currencyStore.grmcBalance <= 0;
+
+    if (!hasWallet || !zeroBalance || !diagnostics) {
+      container.hidden = true;
+      if (currencyUI.diagnosticsList) {
+        currencyUI.diagnosticsList.innerHTML = '';
+      }
+      return;
+    }
+
+    container.hidden = false;
+    const list = currencyUI.diagnosticsList;
+    if (list) {
+      list.innerHTML = '';
+      let added = 0;
+      const addEntry = (label, value) => {
+        if (!value && value !== 0) {
+          return;
+        }
+        const li = document.createElement('li');
+        li.textContent = `${label}: ${value}`;
+        list.appendChild(li);
+        added += 1;
+      };
+
+      addEntry('Cluster', diagnostics.cluster);
+      addEntry('RPC', diagnostics.rpcEndpoint);
+      addEntry('Mint', diagnostics.mint);
+      if (diagnostics.programUsed && diagnostics.programUsed !== 'none') {
+        addEntry('Program scanned', diagnostics.programUsed);
+      }
+      if (typeof diagnostics.decimals === 'number') {
+        addEntry('Mint decimals', diagnostics.decimals);
+      }
+      addEntry('Raw balance', diagnostics.raw);
+      if (diagnostics.legacyError) {
+        addEntry('Legacy token RPC', diagnostics.legacyError);
+      }
+      if (diagnostics.token2022Error) {
+        addEntry('Token-2022 RPC', diagnostics.token2022Error);
+      }
+      if (diagnostics.error && !diagnostics.legacyError && !diagnostics.token2022Error) {
+        addEntry('Last error', diagnostics.error);
+      }
+
+      const configuredCluster = currencyStore.cluster;
+      if (diagnostics.cluster && configuredCluster && diagnostics.cluster !== configuredCluster) {
+        const li = document.createElement('li');
+        li.textContent = `Configured cluster is ${configuredCluster}, diagnostics checked ${diagnostics.cluster}. Switch your wallet network or update the RPC endpoint to match.`;
+        list.appendChild(li);
+        added += 1;
+      }
+
+      if (!added) {
+        const li = document.createElement('li');
+        li.textContent = 'No diagnostics available yet. Try reconnecting your wallet to refresh.';
+        list.appendChild(li);
+      }
+    }
+  }
+
   function renderCurrencyMessage(message, tone = 'note') {
     const container = overlayRefs.currencyContent;
     if (!container) return;
@@ -1213,12 +1327,20 @@
 
   async function refreshCurrencyBalances({ silent = false } = {}) {
     const grmcWallet = window.GRMCWallet;
+    let result = null;
     if (grmcWallet?.refreshGrmcBalance && window.GRMCState?.publicKey) {
-      const result = await grmcWallet.refreshGrmcBalance({ emitEvents: true });
+      result = await grmcWallet.refreshGrmcBalance({ emitEvents: true });
       if (result && Number.isFinite(result.totalBalance)) {
         currencyStore.grmcBalance = result.totalBalance;
       }
+      if (result?.diagnostics) {
+        currencyStore.diagnostics = result.diagnostics;
+      }
     }
+    if (!result?.diagnostics && window.GRMCState?.diagnostics) {
+      currencyStore.diagnostics = window.GRMCState.diagnostics;
+    }
+    currencyStore.cluster = getConfiguredCluster();
     await fetchChefcoinBalance({ silent });
     updateCurrencyView();
   }
@@ -2009,13 +2131,32 @@
     window.onWalletEvent('balance-update', (event) => {
       if (Number.isFinite(event.detail?.totalBalance)) {
         currencyStore.grmcBalance = event.detail.totalBalance;
-        updateCurrencyView();
       }
+      if (event.detail?.diagnostics) {
+        currencyStore.diagnostics = event.detail.diagnostics;
+      } else if (!window.GRMCState?.diagnostics) {
+        currencyStore.diagnostics = null;
+      }
+      currencyStore.cluster = getConfiguredCluster();
+      updateCurrencyView();
     });
     window.onWalletEvent('grmc-balance', (event) => {
       if (Number.isFinite(event.detail?.totalBalance)) {
         currencyStore.grmcBalance = event.detail.totalBalance;
-        updateCurrencyView();
+      }
+      if (event.detail?.diagnostics) {
+        currencyStore.diagnostics = event.detail.diagnostics;
+      } else if (!window.GRMCState?.diagnostics) {
+        currencyStore.diagnostics = null;
+      }
+      currencyStore.cluster = getConfiguredCluster();
+      updateCurrencyView();
+    });
+    window.onWalletEvent('grmc-balance-diagnostics', (event) => {
+      if (event.detail?.diagnostics) {
+        currencyStore.diagnostics = event.detail.diagnostics;
+        currencyStore.cluster = getConfiguredCluster();
+        renderBalanceDiagnostics();
       }
     });
     window.onWalletEvent('chefcoins-update', (event) => {
@@ -2026,6 +2167,7 @@
     });
     window.onWalletEvent('access-update', (event) => {
       currencyStore.walletAddress = event.detail?.publicKey || window.GRMCState?.publicKey || null;
+      currencyStore.cluster = getConfiguredCluster();
       updateCurrencyView();
     });
     window.onWalletEvent('session', () => {

@@ -6,6 +6,9 @@
   const loadingEl = document.getElementById('wallet-loading');
   const startButton = document.getElementById('start-game-button');
   const trialButton = document.getElementById('trial-game-button');
+  const clusterIndicator = document.getElementById('wallet-cluster-indicator');
+
+  const startButtonDefaultLabel = startButton?.textContent?.trim?.() || 'Enter Full Kitchen';
 
   const walletEventTarget = window.__grmcWalletEventTarget || new EventTarget();
   window.__grmcWalletEventTarget = walletEventTarget;
@@ -24,10 +27,14 @@
   const initialState = {
     isHolder: false,
     trialMode: false,
+    restrictedAccess: false,
     publicKey: null,
     sessionJwt: null,
     lastBalanceCheck: null,
     chefcoins: 0,
+    diagnostics: null,
+    onchainGrmc: 0,
+    onchainGrmcRaw: '0',
   };
 
   window.GRMCState = { ...initialState, ...(window.GRMCState || {}) };
@@ -35,6 +42,7 @@
   const defaultConfig = {
     mintAddress: '',
     rpcEndpoint: 'https://api.mainnet-beta.solana.com',
+    cluster: 'mainnet-beta',
     minTokenBalance: 1,
     commitment: 'confirmed',
     autoConnectTrusted: true,
@@ -48,6 +56,10 @@
   config.devWalletAddress = typeof config.devWalletAddress === 'string' && config.devWalletAddress
     ? config.devWalletAddress
     : defaultConfig.devWalletAddress;
+  const normalizedCluster = typeof config.cluster === 'string' && config.cluster.trim()
+    ? config.cluster.trim()
+    : inferClusterFromEndpoint(config.rpcEndpoint);
+  config.cluster = normalizedCluster;
   const parsedSwapBps = Number(config.swapTaxBps);
   config.swapTaxBps = Number.isFinite(parsedSwapBps) ? Math.max(0, Math.floor(parsedSwapBps)) : defaultConfig.swapTaxBps;
   const parsedMinSwap = Number(config.minSwapAmount);
@@ -55,13 +67,22 @@
     ? Math.max(1, Math.floor(parsedMinSwap))
     : defaultConfig.minSwapAmount;
 
+  const TOKEN_PROGRAM_IDS = {
+    legacy: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+    token2022: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
+  };
+
   function applyStaticState() {
     window.GRMCState.swapTaxBps = config.swapTaxBps;
     window.GRMCState.minSwapAmount = config.minSwapAmount;
     window.GRMCState.devWalletAddress = config.devWalletAddress;
+    window.GRMCState.cluster = config.cluster;
+    window.GRMCState.rpcEndpoint = config.rpcEndpoint;
+    window.GRMCState.restrictedAccess = Boolean(window.GRMCState.restrictedAccess);
   }
 
   applyStaticState();
+  updateClusterIndicator();
   window.emitWalletEvent('swap-config', {
     swapTaxBps: config.swapTaxBps,
     minSwapAmount: config.minSwapAmount,
@@ -101,6 +122,94 @@
   function resetCachedConnection() {
     cachedConnection = null;
     cachedMintKey = null;
+  }
+
+  function inferClusterFromEndpoint(endpoint) {
+    if (!endpoint || typeof endpoint !== 'string') {
+      return defaultConfig.cluster;
+    }
+    const normalized = endpoint.toLowerCase();
+    if (normalized.includes('devnet')) {
+      return 'devnet';
+    }
+    if (normalized.includes('testnet')) {
+      return 'testnet';
+    }
+    if (normalized.includes('localhost') || normalized.includes('127.0.0.1')) {
+      return 'localnet';
+    }
+    return 'mainnet-beta';
+  }
+
+  function updateClusterIndicator() {
+    if (!clusterIndicator) {
+      return;
+    }
+    const clusterLabel = window.GRMCState?.cluster || config.cluster || inferClusterFromEndpoint(config.rpcEndpoint);
+    const text = clusterLabel ? `Cluster: ${clusterLabel}` : '';
+    clusterIndicator.textContent = text;
+    clusterIndicator.hidden = !text;
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function safeBigInt(value) {
+    try {
+      if (typeof value === 'bigint') {
+        return value;
+      }
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return BigInt(Math.trunc(value));
+      }
+      const normalized = typeof value === 'string' ? value : String(value ?? '0');
+      if (!normalized) {
+        return 0n;
+      }
+      return BigInt(normalized);
+    } catch (error) {
+      console.warn('[GRMC Gate] Unable to parse token amount as BigInt:', error);
+      return 0n;
+    }
+  }
+
+  function rawToNumber(rawValue, decimals) {
+    if (typeof decimals !== 'number' || decimals < 0) {
+      return Number(rawValue);
+    }
+    if (rawValue === 0n) {
+      return 0;
+    }
+    const rawString = rawValue.toString();
+    if (!decimals) {
+      return Number(rawString);
+    }
+    const isNegative = rawString.startsWith('-');
+    const digits = isNegative ? rawString.slice(1) : rawString;
+    const padded = digits.padStart(decimals + 1, '0');
+    const whole = padded.slice(0, padded.length - decimals) || '0';
+    const fraction = padded.slice(padded.length - decimals).replace(/0+$/, '');
+    const formatted = fraction ? `${whole}.${fraction}` : whole;
+    return Number(isNegative ? `-${formatted}` : formatted);
+  }
+
+  async function fetchMintDecimals(connection, mintKey) {
+    try {
+      const mintInfo = await connection.getParsedAccountInfo(mintKey);
+      const decimals = mintInfo?.value?.data?.parsed?.info?.decimals;
+      if (typeof decimals === 'number') {
+        return decimals;
+      }
+    } catch (error) {
+      console.warn('[GRMC Gate] Unable to fetch mint decimals:', error);
+    }
+    return 9;
   }
 
   window.GRMCWallet = {
@@ -199,6 +308,7 @@
   function applyAccessStyles() {
     document.body.classList.toggle('holder-mode', Boolean(window.GRMCState.isHolder));
     document.body.classList.toggle('trial-mode', Boolean(window.GRMCState.trialMode));
+    document.body.classList.toggle('restricted-mode', Boolean(window.GRMCState.restrictedAccess));
   }
 
   function buildMissingTokenMessage() {
@@ -206,15 +316,40 @@
     const configuredMinimum = Number(config.minTokenBalance);
     const requiredBalance = Number.isFinite(configuredMinimum) ? configuredMinimum : 1;
     const formattedRequired = requiredBalance.toLocaleString('en-US', { maximumFractionDigits: 6 });
+    const diagnostics = window.GRMCState.diagnostics || {};
+    const clusterLabel = diagnostics.cluster || config.cluster || inferClusterFromEndpoint(config.rpcEndpoint);
+    const safeCluster = clusterLabel ? escapeHtml(clusterLabel) : '';
+    const mintLabel = config.mintAddress ? escapeHtml(config.mintAddress) : '';
+    const rpcLabel = diagnostics.rpcEndpoint || config.rpcEndpoint || '';
+
+    const diagnosticsBits = [];
+    if (safeCluster) {
+      diagnosticsBits.push(`Cluster checked: <strong>${safeCluster}</strong>`);
+    }
+    if (rpcLabel) {
+      diagnosticsBits.push(`RPC: <code>${escapeHtml(rpcLabel)}</code>`);
+    }
+    if (diagnostics.programUsed && diagnostics.programUsed !== 'none') {
+      diagnosticsBits.push(`Program: <code>${escapeHtml(diagnostics.programUsed)}</code>`);
+    }
+    if (diagnostics.legacyError || diagnostics.token2022Error || diagnostics.error) {
+      const hint = diagnostics.legacyError || diagnostics.token2022Error || diagnostics.error;
+      diagnosticsBits.push(`Last RPC hint: <code>${escapeHtml(hint)}</code>`);
+    }
+
+    const diagnosticsHint = diagnosticsBits.length ? `<br/><small>${diagnosticsBits.join(' · ')}</small>` : '';
 
     if (balanceCheck.foundAccounts) {
       const formattedBalance = (balanceCheck.totalBalance || 0).toLocaleString('en-US', {
         maximumFractionDigits: 6,
       });
-      return `Your wallet currently holds <strong>${formattedBalance} GRMC</strong>. You need at least <strong>${formattedRequired} GRMC</strong> to unlock the full kitchen. <a href="https://raydium.io/swap/?inputMint=sol&outputMint=6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK&referrer=7i5775tjSXaXut3KtahGmFTEuqY6TB3dS2BgDARdRYAd" target="_blank" rel="noreferrer">Buy GRMC on Raydium</a> and reconnect once the transaction settles.`;
+      return `Your wallet currently holds <strong>${formattedBalance} GRMC</strong>. You need at least <strong>${formattedRequired} GRMC</strong> to unlock the full kitchen.${diagnosticsHint}`;
     }
 
-    return `We could not find a GRMC balance for this wallet. Confirm you are connected to the Solana mainnet and hold at least <strong>${formattedRequired} GRMC</strong> from the official mint. <a href="https://raydium.io/swap/?inputMint=sol&outputMint=6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK&referrer=7i5775tjSXaXut3KtahGmFTEuqY6TB3dS2BgDARdRYAd" target="_blank" rel="noreferrer">Buy GRMC on Raydium</a> and reconnect.`;
+    const mintDescriptor = mintLabel ? `the configured mint <code>${mintLabel}</code>` : 'the configured GRMC mint';
+    const clusterDescriptor = safeCluster ? `<strong>${safeCluster}</strong>` : 'the correct Solana cluster';
+
+    return `We could not locate a GRMC balance for this wallet on ${mintDescriptor}. Confirm your wallet is connected to ${clusterDescriptor} and that your holdings match the GRMC mint above. If your GRMC lives on another cluster (e.g., devnet), update <code>window.GRMC_GATE_CONFIG.rpcEndpoint</code> and <code>cluster</code> to match, then reconnect.${diagnosticsHint}`;
   }
 
   function showPlayReadyState(publicKey) {
@@ -224,7 +359,9 @@
       return;
     }
 
+    startButton.dataset.mode = 'holder';
     startButton.dataset.ready = 'true';
+    startButton.textContent = startButtonDefaultLabel;
     const detectedBalance = window.GRMCState.lastBalanceCheck?.totalBalance;
     const formattedBalance = Number.isFinite(detectedBalance)
       ? detectedBalance.toLocaleString('en-US', { maximumFractionDigits: 6 })
@@ -240,8 +377,10 @@
     toggleLoading(false);
     window.GRMCState.isHolder = true;
     window.GRMCState.trialMode = false;
+    window.GRMCState.restrictedAccess = false;
     window.GRMCState.publicKey = publicKey || window.GRMCState.publicKey;
     applyAccessStyles();
+    updateClusterIndicator();
     if (formattedBalance) {
       window.emitWalletEvent('balance-update', {
         totalBalance: detectedBalance,
@@ -251,6 +390,39 @@
     window.emitWalletEvent('access-update', { isHolder: true, trialMode: false, publicKey: window.GRMCState.publicKey });
     window.emitWalletEvent('connected', { publicKey: window.GRMCState.publicKey, isHolder: true });
     if (typeof startButton.focus === 'function') {
+      try {
+        startButton.focus({ preventScroll: true });
+      } catch (err) {
+        startButton.focus();
+      }
+    }
+  }
+
+  function showRestrictedAccess(publicKey, message) {
+    if (startButton) {
+      startButton.hidden = false;
+      startButton.disabled = false;
+      startButton.dataset.mode = 'restricted';
+      startButton.textContent = 'Enter Kitchen (Restricted)';
+    }
+    connectButton.hidden = true;
+    toggleLoading(false);
+    const statusMessage = message || 'GRMC balance could not be confirmed. You can still enter with limited features.';
+    setStatus(statusMessage);
+    window.GRMCState.publicKey = publicKey || window.GRMCState.publicKey;
+    window.GRMCState.isHolder = false;
+    window.GRMCState.trialMode = false;
+    window.GRMCState.restrictedAccess = true;
+    applyAccessStyles();
+    window.emitWalletEvent('access-update', {
+      isHolder: false,
+      trialMode: false,
+      restrictedAccess: true,
+      publicKey: window.GRMCState.publicKey,
+    });
+    window.emitWalletEvent('connected', { publicKey: window.GRMCState.publicKey, isHolder: false, restrictedAccess: true });
+    updateClusterIndicator();
+    if (startButton && typeof startButton.focus === 'function') {
       try {
         startButton.focus({ preventScroll: true });
       } catch (err) {
@@ -270,12 +442,19 @@
       startButton.hidden = true;
       startButton.disabled = true;
       delete startButton.dataset.ready;
+      delete startButton.dataset.mode;
+      startButton.textContent = startButtonDefaultLabel;
     }
     if (trialButton) {
       trialButton.hidden = false;
       trialButton.disabled = false;
     }
     delete window.GRMCState.lastBalanceCheck;
+    window.GRMCState.restrictedAccess = false;
+    window.GRMCState.onchainGrmc = 0;
+    window.GRMCState.onchainGrmcRaw = '0';
+    window.GRMCState.diagnostics = null;
+    updateClusterIndicator();
   }
 
   function ensureConfigValid() {
@@ -351,12 +530,11 @@
       const holdsToken = await verifyGatedToken(publicKey);
 
       if (!holdsToken) {
-        toggleLoading(false);
-        showError(buildMissingTokenMessage());
-        window.GRMCState.isHolder = false;
         window.GRMCState.publicKey = publicKey;
-        window.emitWalletEvent('connected', { publicKey, isHolder: false });
-        applyAccessStyles();
+        await establishSession(publicKey);
+        const message = buildMissingTokenMessage();
+        showError(message);
+        showRestrictedAccess(publicKey, 'GRMC balance could not be confirmed. You can still enter with limited features.');
         return;
       }
 
@@ -405,13 +583,44 @@
   }
 
   async function updateGrmcBalance(publicKeyString, { emitEvents = true } = {}) {
+    const baseDiagnostics = {
+      cluster: config.cluster,
+      rpcEndpoint: config.rpcEndpoint,
+      mint: config.mintAddress,
+    };
+
     try {
       if (!ensureWeb3Ready()) {
-        return {
+        const diagnostics = { ...baseDiagnostics, error: 'Solana web3 unavailable' };
+        const state = {
           totalBalance: 0,
           foundAccounts: false,
           meetsRequirement: false,
+          timestamp: Date.now(),
+          accountCount: 0,
+          diagnostics,
         };
+        window.GRMCState.lastBalanceCheck = state;
+        window.GRMCState.onchainGrmc = 0;
+        window.GRMCState.onchainGrmcRaw = '0';
+        window.GRMCState.diagnostics = diagnostics;
+        if (emitEvents) {
+          window.emitWalletEvent('balance-update', {
+            totalBalance: 0,
+            formattedBalance: '0',
+            meetsRequirement: false,
+            source: 'grmc',
+            diagnostics,
+          });
+          window.emitWalletEvent('grmc-balance', {
+            totalBalance: 0,
+            meetsRequirement: false,
+            accountCount: 0,
+            diagnostics,
+          });
+          window.emitWalletEvent('grmc-balance-diagnostics', { diagnostics });
+        }
+        return state;
       }
 
       const connection = getConnection();
@@ -428,102 +637,167 @@
 
       const configuredMinimum = Number(config.minTokenBalance);
       const minimumBalance = Number.isFinite(configuredMinimum) ? configuredMinimum : 1;
+      const fetchConfig = { encoding: 'jsonParsed', commitment: config.commitment || 'confirmed' };
+      const decimals = await fetchMintDecimals(connection, mintKey);
+      const mintBase58 = mintKey.toBase58();
 
-      const legacyTokenProgramId = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
-      const token2022ProgramId = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
-
-      const matchesMint = (parsedAccount) => {
-        const mint = parsedAccount?.account?.data?.parsed?.info?.mint;
-        return typeof mint === 'string' && mint === mintKey.toBase58();
+      const diagnostics = {
+        ...baseDiagnostics,
+        commitment: fetchConfig.commitment,
+        decimals,
+        raw: '0',
+        programUsed: 'none',
+        steps: [],
       };
 
-      const parseBalance = (parsedAccount) => {
-        const amountInfo = parsedAccount?.account?.data?.parsed?.info?.tokenAmount;
-        if (!amountInfo) {
-          return 0;
-        }
+      const legacyProgramId = new PublicKey(TOKEN_PROGRAM_IDS.legacy);
+      const token2022ProgramId = new PublicKey(TOKEN_PROGRAM_IDS.token2022);
 
-        if (typeof amountInfo.uiAmount === 'number') {
-          return amountInfo.uiAmount;
-        }
+      const seenAccounts = new Set();
+      let totalRaw = 0n;
+      let detectedProgram = 'none';
 
-        const rawAmount = parseFloat(amountInfo.amount);
-        const decimals = Number(amountInfo.decimals) || 0;
-        if (Number.isFinite(rawAmount)) {
-          return rawAmount / Math.pow(10, decimals);
-        }
-
-        return 0;
+      const summarizeAccounts = (accounts, programLabel) => {
+        let matched = 0;
+        let rawSum = 0n;
+        accounts.forEach((account) => {
+          const info = account?.account?.data?.parsed?.info;
+          if (!info || info.mint !== mintBase58) {
+            return;
+          }
+          const address = typeof account?.pubkey === 'string'
+            ? account.pubkey
+            : account?.pubkey?.toBase58?.();
+          if (!address) {
+            return;
+          }
+          const amountStr = info?.tokenAmount?.amount ?? info?.tokenAmount?.tokenAmount?.amount ?? '0';
+          const rawAmount = safeBigInt(amountStr);
+          rawSum += rawAmount;
+          if (!seenAccounts.has(address)) {
+            seenAccounts.add(address);
+            totalRaw += rawAmount;
+          }
+          matched += 1;
+          const ownerProgram = account?.account?.owner;
+          if (ownerProgram === legacyProgramId.toBase58()) {
+            detectedProgram = 'token';
+          } else if (ownerProgram === token2022ProgramId.toBase58()) {
+            detectedProgram = 'token-2022';
+          } else if (programLabel && detectedProgram === 'none') {
+            detectedProgram = programLabel;
+          }
+        });
+        return { accounts: accounts.length, matched, raw: rawSum.toString() };
       };
 
-      const directResponse = await connection.getParsedTokenAccountsByOwner(owner, { mint: mintKey });
-      let matchingAccounts = Array.isArray(directResponse?.value)
-        ? directResponse.value.filter(matchesMint)
-        : [];
+      const fetchVariant = async (label, filter, programLabel) => {
+        try {
+          const response = await connection.getTokenAccountsByOwner(owner, filter, fetchConfig);
+          const accounts = Array.isArray(response?.value) ? response.value : [];
+          const summary = summarizeAccounts(accounts, programLabel);
+          diagnostics.steps.push({ label, program: programLabel, ...summary });
+          return summary;
+        } catch (error) {
+          const message = error?.message || String(error);
+          diagnostics.steps.push({ label, program: programLabel, error: message });
+          if (programLabel === 'token') {
+            diagnostics.legacyError = message;
+          } else if (programLabel === 'token-2022') {
+            diagnostics.token2022Error = message;
+          }
+          return { accounts: 0, matched: 0, raw: '0' };
+        }
+      };
 
-      if (!matchingAccounts.length) {
-        const programResults = await Promise.allSettled([
-          connection.getParsedTokenAccountsByOwner(owner, { programId: legacyTokenProgramId }),
-          connection.getParsedTokenAccountsByOwner(owner, { programId: token2022ProgramId }),
-        ]);
+      await fetchVariant('mint', { mint: mintKey }, 'mint');
+      await fetchVariant('token-program', { programId: legacyProgramId }, 'token');
+      await fetchVariant('token-2022', { programId: token2022ProgramId }, 'token-2022');
 
-        matchingAccounts = programResults
-          .filter((result) => result.status === 'fulfilled')
-          .flatMap((result) => (result.value?.value || []).filter(matchesMint));
-      }
+      diagnostics.programUsed = detectedProgram;
+      diagnostics.raw = totalRaw.toString();
 
-      const totalBalance = matchingAccounts.reduce((sum, account) => sum + parseBalance(account), 0);
-      const meetsRequirement = totalBalance >= minimumBalance;
+      const totalBalance = rawToNumber(totalRaw, decimals);
+      const meetsRequirement = Number.isFinite(totalBalance) ? totalBalance >= minimumBalance : false;
 
       const state = {
         totalBalance,
-        foundAccounts: matchingAccounts.length > 0,
+        foundAccounts: seenAccounts.size > 0,
         meetsRequirement,
         timestamp: Date.now(),
-        accountCount: matchingAccounts.length,
+        accountCount: seenAccounts.size,
+        rawBalance: totalRaw.toString(),
+        diagnostics,
       };
 
       window.GRMCState.lastBalanceCheck = state;
+      window.GRMCState.onchainGrmc = Number.isFinite(totalBalance) ? totalBalance : 0;
+      window.GRMCState.onchainGrmcRaw = totalRaw.toString();
+      window.GRMCState.diagnostics = diagnostics;
 
       if (emitEvents) {
-        const formattedBalance = totalBalance.toLocaleString('en-US', { maximumFractionDigits: 6 });
+        const formattedBalance = Number.isFinite(totalBalance)
+          ? totalBalance.toLocaleString('en-US', { maximumFractionDigits: 6 })
+          : '0';
         window.emitWalletEvent('balance-update', {
           totalBalance,
           formattedBalance,
           meetsRequirement,
           source: 'grmc',
+          rawBalance: totalRaw.toString(),
+          diagnostics,
         });
         window.emitWalletEvent('grmc-balance', {
           totalBalance,
           meetsRequirement,
-          accountCount: matchingAccounts.length,
+          accountCount: seenAccounts.size,
+          rawBalance: totalRaw.toString(),
+          programUsed: diagnostics.programUsed,
+          diagnostics,
         });
+        window.emitWalletEvent('grmc-balance-diagnostics', { diagnostics });
       }
 
       return state;
     } catch (error) {
       console.error('[GRMC Gate] Balance check failed:', error);
+      const diagnostics = {
+        ...baseDiagnostics,
+        error: error?.message || 'Unknown error',
+      };
       const state = {
         totalBalance: 0,
         foundAccounts: false,
         meetsRequirement: false,
         timestamp: Date.now(),
-        error: error?.message || 'Unknown error',
+        accountCount: 0,
+        error: diagnostics.error,
+        diagnostics,
       };
+
       window.GRMCState.lastBalanceCheck = state;
+      window.GRMCState.onchainGrmc = 0;
+      window.GRMCState.onchainGrmcRaw = '0';
+      window.GRMCState.diagnostics = diagnostics;
       if (emitEvents) {
         window.emitWalletEvent('balance-update', {
           totalBalance: 0,
           formattedBalance: '0',
           meetsRequirement: false,
           source: 'grmc',
-          error: error?.message || 'Unknown error',
+          diagnostics,
         });
+        window.emitWalletEvent('grmc-balance', {
+          totalBalance: 0,
+          meetsRequirement: false,
+          accountCount: 0,
+          diagnostics,
+        });
+        window.emitWalletEvent('grmc-balance-diagnostics', { diagnostics });
       }
       return state;
     }
   }
-
   async function verifyGatedToken(publicKeyString) {
     const result = await updateGrmcBalance(publicKeyString, { emitEvents: true });
     if (result.error) {
@@ -542,8 +816,13 @@
       window.GRMCState.isHolder = false;
       window.GRMCState.sessionJwt = null;
       window.GRMCState.chefcoins = 0;
+      window.GRMCState.restrictedAccess = false;
       applyAccessStyles();
-      window.emitWalletEvent('access-update', { isHolder: false, trialMode: window.GRMCState.trialMode });
+      window.emitWalletEvent('access-update', {
+        isHolder: false,
+        trialMode: window.GRMCState.trialMode,
+        restrictedAccess: false,
+      });
       window.emitWalletEvent('chefcoins-update', { chefcoins: 0 });
       if (!overlay.hidden) {
         resetGateMessaging();
@@ -564,6 +843,7 @@
       window.GRMCState = { ...initialState };
       applyStaticState();
       applyAccessStyles();
+      window.emitWalletEvent('access-update', { isHolder: false, trialMode: false, restrictedAccess: false });
       window.emitWalletEvent('disconnected', {});
       window.emitWalletEvent('chefcoins-update', { chefcoins: 0 });
       window.emitWalletEvent('grmc-balance', { totalBalance: 0, meetsRequirement: false, accountCount: 0 });
@@ -602,8 +882,11 @@
           await establishSession(publicKey);
           showPlayReadyState(publicKey);
         } else {
-          resetGateMessaging();
-          showError(buildMissingTokenMessage());
+          window.GRMCState.publicKey = publicKey;
+          await establishSession(publicKey);
+          const message = buildMissingTokenMessage();
+          showError(message);
+          showRestrictedAccess(publicKey, 'GRMC balance could not be confirmed. You can still enter with limited features.');
         }
       } catch (error) {
         if (error?.code === 4001 || /User rejected/i.test(error?.message || '')) {
@@ -620,14 +903,36 @@
 
   connectButton.addEventListener('click', connectWallet);
   function startFullAccess() {
+    if (startButton?.dataset.mode === 'restricted') {
+      window.GRMCState.trialMode = false;
+      window.GRMCState.isHolder = false;
+      window.GRMCState.restrictedAccess = true;
+      applyAccessStyles();
+      window.emitWalletEvent('access-update', {
+        isHolder: false,
+        trialMode: false,
+        restrictedAccess: true,
+        publicKey: window.GRMCState.publicKey,
+      });
+      hideOverlay();
+      window.BlockyKitchenGame?.create();
+      return;
+    }
+
     if (!hasVerifiedToken) {
       showError('Please connect a GRMC-holding wallet before starting the game.');
       return;
     }
     window.GRMCState.trialMode = false;
     window.GRMCState.isHolder = true;
+    window.GRMCState.restrictedAccess = false;
     applyAccessStyles();
-    window.emitWalletEvent('access-update', { isHolder: true, trialMode: false, publicKey: window.GRMCState.publicKey });
+    window.emitWalletEvent('access-update', {
+      isHolder: true,
+      trialMode: false,
+      restrictedAccess: false,
+      publicKey: window.GRMCState.publicKey,
+    });
     hideOverlay();
     window.BlockyKitchenGame?.create();
   }
@@ -635,9 +940,10 @@
   function startTrial() {
     window.GRMCState.trialMode = true;
     window.GRMCState.isHolder = false;
+    window.GRMCState.restrictedAccess = false;
     window.GRMCState.sessionJwt = null;
     applyAccessStyles();
-    window.emitWalletEvent('access-update', { isHolder: false, trialMode: true });
+    window.emitWalletEvent('access-update', { isHolder: false, trialMode: true, restrictedAccess: false });
     window.emitWalletEvent('trial-started', { trialMode: true });
     hideOverlay();
     window.BlockyKitchenGame?.create();

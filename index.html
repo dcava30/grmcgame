@@ -29,6 +29,7 @@
         </div>
         <div id="wallet-loading" class="wallet-gate__loading" aria-live="polite" hidden>Verifying GRMC balance…</div>
         <div id="wallet-status" class="wallet-gate__status" aria-live="polite"></div>
+        <p id="wallet-cluster-indicator" class="wallet-gate__cluster" aria-live="polite"></p>
         <div id="wallet-error" class="wallet-gate__error" role="alert" hidden></div>
         <p class="wallet-gate__helper">
           Don’t have GRMC yet? <a href="https://raydium.io/swap/?inputMint=sol&amp;outputMint=6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK&amp;referrer=7i5775tjSXaXut3KtahGmFTEuqY6TB3dS2BgDARdRYAd" target="_blank" rel="noreferrer">Buy GRMC on Raydium</a>
@@ -49,6 +50,7 @@
       window.GRMC_GATE_CONFIG = {
         mintAddress: '6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK',
         rpcEndpoint: 'https://api.mainnet-beta.solana.com',
+        cluster: 'mainnet-beta',
         minTokenBalance: 1,
         apiBase: 'https://api.example.com',
         devWalletAddress: '9Ctm5fCGoLrdXVZAkdKNBZnkf3YF5qD4Ejjdge4cmaWX',
@@ -108,6 +110,7 @@
       <div class="grmc-overlay__panel currency-overlay__panel">
         <div class="grmc-overlay__header">
           <h2 id="currency-title">Wallet &amp; Currency</h2>
+          <span id="currency-cluster-indicator" class="currency-cluster-indicator" aria-live="polite"></span>
           <button type="button" class="grmc-overlay__close" data-close-overlay>&times;</button>
         </div>
         <section class="currency-balances" aria-live="polite">
@@ -133,6 +136,12 @@
           </button>
         </section>
         <section id="currency-converter" class="currency-converter" aria-live="polite"></section>
+        <div id="currency-diagnostics" class="currency-diagnostics" hidden>
+          <details id="currency-diagnostics-details">
+            <summary>Why am I seeing 0 GRMC?</summary>
+            <ul id="currency-diagnostics-list" class="currency-diagnostics__list"></ul>
+          </details>
+        </div>
       </div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js" integrity="sha256-ONKM0xPNW3HIjh//ZQzQpLCPOfmU52nlFqYMiEa3OcM=" crossorigin="anonymous"></script>
