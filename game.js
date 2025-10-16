@@ -936,11 +936,80 @@
     }
   }
 
+  async function transferGrmcToDev(amountUi) {
+    ensureGlobalState();
+    if (!API_BASE) {
+      throw new Error('Backend API not configured.');
+    }
+    const sessionJwt = window.GRMCState?.sessionJwt;
+    if (!sessionJwt) {
+      throw new Error('Session not established. Connect your wallet first.');
+    }
+    if (typeof solanaWeb3 === 'undefined') {
+      throw new Error('Solana web3.js not available.');
+    }
+
+    const provider = window.solana || window.phantom?.solana;
+    if (!provider) {
+      throw new Error('No Solana wallet detected.');
+    }
+
+    const numericAmount = Math.max(0, Math.floor(Number(amountUi) || 0));
+    if (!numericAmount) {
+      throw new Error('Purchase amount must be greater than zero.');
+    }
+
+    const intentResponse = await fetch(`${API_BASE}/swap/grmc-to-chefcoins/intent`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${sessionJwt}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ amount: numericAmount, purpose: 'purchase' }),
+    });
+
+    if (!intentResponse.ok) {
+      const text = await intentResponse.text();
+      throw new Error(text || 'Unable to prepare GRMC transfer.');
+    }
+
+    const payload = await intentResponse.json();
+    if (!payload?.transaction) {
+      throw new Error('Backend did not return a transfer transaction.');
+    }
+
+    const raw = Uint8Array.from(atob(payload.transaction), (c) => c.charCodeAt(0));
+    const transaction = solanaWeb3.Transaction.from(raw);
+
+    if (typeof provider.signAndSendTransaction === 'function') {
+      const result = await provider.signAndSendTransaction(transaction);
+      return result?.signature || result;
+    }
+
+    if (typeof provider.signTransaction === 'function') {
+      const connection = window.GRMCWallet?.getConnection?.();
+      if (!connection) {
+        throw new Error('No RPC connection available to broadcast transaction.');
+      }
+      const signed = await provider.signTransaction(transaction);
+      const signature = await connection.sendRawTransaction(signed.serialize());
+      await connection.confirmTransaction(signature, 'confirmed');
+      return signature;
+    }
+
+    throw new Error('Wallet cannot sign transactions.');
+  }
+
   async function spendToken(itemId, { price, metadata } = {}) {
     ensureGlobalState();
     const sessionJwt = window.GRMCState?.sessionJwt;
-    const provider = window.solana;
+    const provider = window.solana || window.phantom?.solana;
     const normalizedPrice = typeof price === 'number' ? price : null;
+
+    if (!Number.isFinite(normalizedPrice) || normalizedPrice <= 0) {
+      console.warn('[GRMC] Invalid purchase price for', itemId, price);
+      return applyPurchaseLocally(itemId, metadata);
+    }
 
     if (!API_BASE || !sessionJwt || typeof provider?.signMessage !== 'function') {
       console.warn('[GRMC] Falling back to local purchase flow for', itemId);
@@ -970,13 +1039,19 @@
       const signatureResult = await provider.signMessage(encoded, 'utf8');
       const signatureArray = Array.from(signatureResult?.signature || signatureResult || []);
 
+      const transferSignature = await transferGrmcToDev(normalizedPrice);
+
       const confirmResponse = await fetch(`${API_BASE}/purchase/confirm`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${sessionJwt}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ intentId: intent?.id || intent?.intentId, signature: signatureArray, itemId }),
+        body: JSON.stringify({
+          intentId: intent?.id || intent?.intentId,
+          signature: transferSignature,
+          messageSignature: signatureArray,
+        }),
       });
 
       if (!confirmResponse.ok) {
@@ -989,6 +1064,7 @@
       const confirmation = await confirmResponse.json();
       if (confirmation?.ok) {
         applyPurchaseLocally(itemId, metadata);
+        await refreshCurrencyBalances({ silent: true });
         return true;
       }
 
@@ -996,7 +1072,7 @@
       return false;
     } catch (error) {
       console.error('[GRMC] Purchase error', error);
-      showToast('Something went wrong completing that purchase.', 'error');
+      showToast(error?.message || 'Something went wrong completing that purchase.', 'error');
       return false;
     }
   }

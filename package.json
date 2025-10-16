@@ -3,11 +3,21 @@
   "version": "1.0.0",
   "private": true,
   "type": "commonjs",
+  "scripts": {
+    "dev:api": "node backend/serverless.js",
+    "dev:web": "npx serve . -p 5173",
+    "dev": "npm-run-all --parallel dev:api dev:web"
+  },
   "dependencies": {
     "@solana/spl-token": "^0.4.7",
     "@solana/web3.js": "^1.91.7",
+    "bs58": "^5.0.0",
+    "cors": "^2.8.5",
     "express": "^4.18.2",
-    "tweetnacl": "^1.0.3",
-    "bs58": "^5.0.0"
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5",
+    "serve": "^14.2.3"
   }
 }
