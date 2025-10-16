@@ -2,6 +2,14 @@ const express = require('express');
 const crypto = require('crypto');
 const nacl = require('tweetnacl');
 const bs58 = require('bs58');
+const { Connection, Keypair, PublicKey, Transaction } = require('@solana/web3.js');
+const {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountInstruction,
+  createTransferInstruction,
+  getAssociatedTokenAddressSync,
+} = require('@solana/spl-token');
 
 // In-memory storage suitable for prototyping. Swap with Redis/Supabase in production.
 const nonceStore = new Map();
@@ -9,6 +17,8 @@ const purchaseIntents = new Map();
 const sessionStore = new Map();
 const challengeStore = new Map();
 const leaderboardRewards = new Map();
+const currencyBalances = new Map();
+const grmcSwapIntents = new Map();
 
 const WEEKLY_CHALLENGE_BLUEPRINT = [
   { id: 'weekly_medium_plate_master', target: 12, reward: 15 },
@@ -48,6 +58,94 @@ function ensureLeaderboardRewards(publicKey) {
 
 const app = express();
 app.use(express.json());
+
+const RPC_ENDPOINT = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
+const MINT_ADDRESS = process.env.GRMC_MINT || '';
+const DEV_WALLET = process.env.DEV_WALLET || '9Ctm5fCGoLrdXVZAkdKNBZnkf3YF5qD4Ejjdge4cmaWX';
+const swapTaxEnv = Number(process.env.SWAP_TAX_BPS);
+const SWAP_TAX_BPS = Number.isFinite(swapTaxEnv) ? Math.max(0, Math.floor(swapTaxEnv)) : 300;
+const minSwapEnv = Number(process.env.MIN_SWAP_AMOUNT);
+const MIN_SWAP_AMOUNT = Number.isFinite(minSwapEnv) ? Math.max(1, Math.floor(minSwapEnv)) : 1;
+
+const connection = new Connection(RPC_ENDPOINT, 'confirmed');
+let mintPublicKey = null;
+if (MINT_ADDRESS) {
+  try {
+    mintPublicKey = new PublicKey(MINT_ADDRESS);
+  } catch (error) {
+    console.warn('[GRMC] Invalid GRMC_MINT provided:', error.message);
+  }
+}
+
+let treasuryKeypair = null;
+if (process.env.TREASURY_SECRET_B58) {
+  try {
+    const secret = bs58.decode(process.env.TREASURY_SECRET_B58);
+    treasuryKeypair = Keypair.fromSecretKey(secret);
+  } catch (error) {
+    console.warn('[GRMC] Failed to decode TREASURY_SECRET_B58:', error.message);
+  }
+}
+
+const treasuryPublicKey = treasuryKeypair?.publicKey || null;
+
+let mintDecimalsCache = null;
+
+function ensureBalanceEntry(wallet) {
+  if (!currencyBalances.has(wallet)) {
+    currencyBalances.set(wallet, { chefcoins: 0, updatedAt: Date.now() });
+  }
+  return currencyBalances.get(wallet);
+}
+
+function computeSwapBreakdown(amount) {
+  const numeric = Math.max(0, Math.floor(Number(amount) || 0));
+  const tax = Math.floor((numeric * SWAP_TAX_BPS) / 10_000);
+  const net = Math.max(0, numeric - tax);
+  return { amount: numeric, tax, net };
+}
+
+async function getMintDecimals() {
+  if (!mintPublicKey) {
+    throw new Error('GRMC mint not configured');
+  }
+  if (mintDecimalsCache && Date.now() - mintDecimalsCache.fetchedAt < 60 * 60 * 1000) {
+    return mintDecimalsCache.decimals;
+  }
+  const info = await connection.getParsedAccountInfo(mintPublicKey);
+  const decimals = info?.value?.data?.parsed?.info?.decimals;
+  if (!Number.isFinite(decimals)) {
+    throw new Error('Unable to fetch mint decimals');
+  }
+  mintDecimalsCache = { decimals: Number(decimals), fetchedAt: Date.now() };
+  return mintDecimalsCache.decimals;
+}
+
+function toBaseUnits(amount, decimals) {
+  const normalized = BigInt(Math.max(0, Math.floor(Number(amount) || 0)));
+  const factor = BigInt(10) ** BigInt(decimals);
+  return normalized * factor;
+}
+
+async function ensureAtaInstruction(ataPublicKey, tokenOwner, payer) {
+  const info = await connection.getAccountInfo(ataPublicKey);
+  if (info) {
+    return null;
+  }
+  return createAssociatedTokenAccountInstruction(
+    payer,
+    ataPublicKey,
+    tokenOwner,
+    mintPublicKey,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+}
+
+function recordTelemetry(event, data = {}) {
+  const payload = { event, timestamp: Date.now(), ...data };
+  console.log('[telemetry]', payload);
+}
 
 function createNonce() {
   return crypto.randomBytes(24).toString('base64');
@@ -103,6 +201,271 @@ function requireSession(req, res, next) {
   req.session = sessionStore.get(token);
   next();
 }
+
+app.get('/currency/balances', requireSession, (req, res) => {
+  const wallet = req.session.publicKey;
+  const entry = ensureBalanceEntry(wallet);
+  res.json({
+    wallet,
+    chefcoins: entry.chefcoins,
+    chefcoinsToGrmcEnabled: Boolean(treasuryPublicKey),
+    chefcoinsToGrmcDisabledReason: treasuryPublicKey ? undefined : 'Treasury not configured.',
+  });
+});
+
+app.post('/currency/earn', requireSession, (req, res) => {
+  const { amount, reason } = req.body || {};
+  const numericAmount = Math.max(0, Math.floor(Number(amount) || 0));
+  if (!numericAmount) {
+    return res.status(400).json({ error: 'amount must be greater than zero' });
+  }
+  if (numericAmount > 10_000) {
+    return res.status(400).json({ error: 'amount exceeds allowed limit' });
+  }
+  const wallet = req.session.publicKey;
+  const entry = ensureBalanceEntry(wallet);
+  entry.chefcoins += numericAmount;
+  entry.updatedAt = Date.now();
+  const normalizedReason = typeof reason === 'string' ? reason.slice(0, 64) : 'gameplay';
+  recordTelemetry('earn_awarded', { wallet, amount: numericAmount, reason: normalizedReason });
+  res.json({ wallet, chefcoins: entry.chefcoins });
+});
+
+app.post('/swap/grmc-to-chefcoins/intent', requireSession, async (req, res) => {
+  try {
+    if (!mintPublicKey) {
+      return res.status(500).json({ error: 'GRMC mint not configured on server' });
+    }
+    const { amount } = req.body || {};
+    const { amount: normalizedAmount, tax, net } = computeSwapBreakdown(amount);
+    if (!normalizedAmount) {
+      return res.status(400).json({ error: 'amount must be greater than zero' });
+    }
+    if (normalizedAmount < MIN_SWAP_AMOUNT) {
+      return res.status(400).json({ error: `Minimum swap amount is ${MIN_SWAP_AMOUNT}` });
+    }
+
+    const wallet = req.session.publicKey;
+    const playerPublicKey = new PublicKey(wallet);
+    const devPublicKey = new PublicKey(DEV_WALLET);
+    const decimals = await getMintDecimals();
+    const rawAmount = toBaseUnits(normalizedAmount, decimals);
+
+    const sourceAta = getAssociatedTokenAddressSync(mintPublicKey, playerPublicKey, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+    const destinationAta = getAssociatedTokenAddressSync(
+      mintPublicKey,
+      devPublicKey,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    const instructions = [];
+    const maybeCreateDest = await ensureAtaInstruction(destinationAta, devPublicKey, playerPublicKey);
+    if (maybeCreateDest) {
+      instructions.push(maybeCreateDest);
+    }
+    instructions.push(createTransferInstruction(sourceAta, destinationAta, playerPublicKey, rawAmount, [], TOKEN_PROGRAM_ID));
+
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+    const transaction = new Transaction({ feePayer: playerPublicKey, recentBlockhash: blockhash });
+    transaction.lastValidBlockHeight = lastValidBlockHeight;
+    instructions.forEach((instruction) => transaction.add(instruction));
+
+    const serialized = transaction.serialize({ requireAllSignatures: false });
+    const intentId = crypto.randomUUID();
+    grmcSwapIntents.set(intentId, {
+      wallet,
+      amount: normalizedAmount,
+      tax,
+      net,
+      rawAmount: rawAmount.toString(),
+      createdAt: Date.now(),
+      blockhash,
+      lastValidBlockHeight,
+    });
+    recordTelemetry('swap_intent_created', {
+      wallet,
+      direction: 'grmc-to-chefcoins',
+      amount: normalizedAmount,
+      tax,
+      net,
+      intentId,
+    });
+    res.json({
+      intentId,
+      transaction: Buffer.from(serialized).toString('base64'),
+      amount: normalizedAmount,
+      tax,
+      net,
+      swapTaxBps: SWAP_TAX_BPS,
+    });
+  } catch (error) {
+    console.error('[GRMC] swap intent error', error);
+    res.status(500).json({ error: error?.message || 'Unable to create swap intent' });
+  }
+});
+
+app.post('/swap/grmc-to-chefcoins/confirm', requireSession, async (req, res) => {
+  const { intentId, signature } = req.body || {};
+  if (!intentId || typeof intentId !== 'string') {
+    return res.status(400).json({ error: 'intentId required' });
+  }
+  if (!signature || typeof signature !== 'string') {
+    return res.status(400).json({ error: 'signature required' });
+  }
+
+  const intent = grmcSwapIntents.get(intentId);
+  if (!intent) {
+    return res.status(404).json({ error: 'Swap intent not found' });
+  }
+  if (intent.wallet !== req.session.publicKey) {
+    return res.status(403).json({ error: 'Intent owner mismatch' });
+  }
+
+  try {
+    const parsed = await connection.getParsedTransaction(signature, { commitment: 'confirmed' });
+    if (!parsed) {
+      recordTelemetry('swap_failed', { wallet: intent.wallet, intentId, reason: 'transaction_not_found' });
+      return res.status(404).json({ error: 'Transaction not found on-chain' });
+    }
+    if (parsed.meta?.err) {
+      recordTelemetry('swap_failed', { wallet: intent.wallet, intentId, reason: 'transaction_failed', err: parsed.meta.err });
+      return res.status(400).json({ error: 'Transaction failed on-chain' });
+    }
+
+    const mint = mintPublicKey?.toBase58();
+    const findBalance = (balances = [], owner) =>
+      balances.find((entry) => entry.owner === owner && entry.mint === mint);
+
+    const walletPre = findBalance(parsed.meta?.preTokenBalances, intent.wallet);
+    const walletPost = findBalance(parsed.meta?.postTokenBalances, intent.wallet);
+    const devPre = findBalance(parsed.meta?.preTokenBalances, DEV_WALLET);
+    const devPost = findBalance(parsed.meta?.postTokenBalances, DEV_WALLET);
+
+    const expectedRaw = BigInt(intent.rawAmount);
+    if (!walletPre || !walletPost) {
+      recordTelemetry('swap_failed', { wallet: intent.wallet, intentId, reason: 'wallet_balance_missing' });
+      return res.status(400).json({ error: 'Wallet token balance not present in transaction' });
+    }
+
+    const walletDelta = BigInt(walletPre.uiTokenAmount.amount) - BigInt(walletPost.uiTokenAmount.amount);
+    if (walletDelta !== expectedRaw) {
+      recordTelemetry('swap_failed', { wallet: intent.wallet, intentId, reason: 'amount_mismatch' });
+      return res.status(400).json({ error: 'Transferred amount does not match intent' });
+    }
+
+    const devDelta = BigInt(devPost?.uiTokenAmount?.amount || 0) - BigInt(devPre?.uiTokenAmount?.amount || 0);
+    if (devDelta !== expectedRaw) {
+      recordTelemetry('swap_failed', { wallet: intent.wallet, intentId, reason: 'dev_amount_mismatch' });
+      return res.status(400).json({ error: 'Developer wallet did not receive expected amount' });
+    }
+
+    const entry = ensureBalanceEntry(intent.wallet);
+    entry.chefcoins += intent.net;
+    entry.updatedAt = Date.now();
+    grmcSwapIntents.delete(intentId);
+    recordTelemetry('swap_confirmed', {
+      wallet: intent.wallet,
+      direction: 'grmc-to-chefcoins',
+      intentId,
+      signature,
+      amount: intent.amount,
+      tax: intent.tax,
+      net: intent.net,
+    });
+    res.json({ wallet: intent.wallet, chefcoins: entry.chefcoins, amount: intent.amount, net: intent.net, tax: intent.tax });
+  } catch (error) {
+    console.error('[GRMC] swap confirmation error', error);
+    res.status(500).json({ error: error?.message || 'Unable to confirm swap' });
+  }
+});
+
+app.post('/swap/chefcoins-to-grmc', requireSession, async (req, res) => {
+  const { amount, destination } = req.body || {};
+  const { amount: normalizedAmount, tax, net } = computeSwapBreakdown(amount);
+  if (!normalizedAmount) {
+    return res.status(400).json({ error: 'amount must be greater than zero' });
+  }
+  if (normalizedAmount < MIN_SWAP_AMOUNT) {
+    return res.status(400).json({ error: `Minimum swap amount is ${MIN_SWAP_AMOUNT}` });
+  }
+  if (!destination || typeof destination !== 'string') {
+    return res.status(400).json({ error: 'destination wallet required' });
+  }
+  if (!mintPublicKey) {
+    return res.status(500).json({ error: 'GRMC mint not configured on server' });
+  }
+  if (!treasuryKeypair || !treasuryPublicKey) {
+    return res.status(500).json({ error: 'Treasury not configured' });
+  }
+
+  const wallet = req.session.publicKey;
+  if (destination !== wallet) {
+    return res.status(400).json({ error: 'destination must match authenticated wallet' });
+  }
+  const entry = ensureBalanceEntry(wallet);
+  if (entry.chefcoins < normalizedAmount) {
+    return res.status(400).json({ error: 'Insufficient ChefCoins' });
+  }
+
+  entry.chefcoins -= normalizedAmount;
+
+  try {
+    const recipient = new PublicKey(destination);
+    const decimals = await getMintDecimals();
+    const rawAmount = toBaseUnits(net, decimals);
+    const treasuryAta = getAssociatedTokenAddressSync(
+      mintPublicKey,
+      treasuryPublicKey,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    const recipientAta = getAssociatedTokenAddressSync(
+      mintPublicKey,
+      recipient,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    const instructions = [];
+    const ensureTreasuryAta = await ensureAtaInstruction(treasuryAta, treasuryPublicKey, treasuryPublicKey);
+    if (ensureTreasuryAta) {
+      instructions.push(ensureTreasuryAta);
+    }
+    const ensureRecipientAta = await ensureAtaInstruction(recipientAta, recipient, treasuryPublicKey);
+    if (ensureRecipientAta) {
+      instructions.push(ensureRecipientAta);
+    }
+
+    instructions.push(createTransferInstruction(treasuryAta, recipientAta, treasuryPublicKey, rawAmount, [], TOKEN_PROGRAM_ID));
+
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+    const transaction = new Transaction({ feePayer: treasuryPublicKey, recentBlockhash: blockhash });
+    transaction.lastValidBlockHeight = lastValidBlockHeight;
+    instructions.forEach((instruction) => transaction.add(instruction));
+
+    const signature = await connection.sendTransaction(transaction, [treasuryKeypair]);
+    await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
+
+    entry.updatedAt = Date.now();
+    recordTelemetry('swap_confirmed', {
+      wallet,
+      direction: 'chefcoins-to-grmc',
+      amount: normalizedAmount,
+      tax,
+      net,
+      signature,
+    });
+    res.json({ wallet, chefcoins: entry.chefcoins, signature, amount: normalizedAmount, net, tax });
+  } catch (error) {
+    entry.chefcoins += normalizedAmount;
+    console.error('[GRMC] chefcoins->GRMC swap error', error);
+    res.status(500).json({ error: error?.message || 'Unable to complete conversion' });
+  }
+});
 
 app.post('/scores/submit', requireSession, (req, res) => {
   const { levelId, score, runDuration, message, signature } = req.body || {};

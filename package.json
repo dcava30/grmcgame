@@ -1,0 +1,13 @@
+{
+  "name": "grmcgame",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "@solana/spl-token": "^0.4.7",
+    "@solana/web3.js": "^1.91.7",
+    "express": "^4.18.2",
+    "tweetnacl": "^1.0.3",
+    "bs58": "^5.0.0"
+  }
+}
