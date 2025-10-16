@@ -52,6 +52,131 @@
     return Math.min(Math.max(numeric, min), max);
   }
 
+  function formatTokenAmount(value, { fractionDigits = 4 } = {}) {
+    const numeric = Number.isFinite(value) ? value : 0;
+    return numeric.toLocaleString('en-US', { maximumFractionDigits: fractionDigits });
+  }
+
+  function shortenAddress(address, chars = 4) {
+    if (!address || typeof address !== 'string') {
+      return '';
+    }
+    if (address.length <= chars * 2) {
+      return address;
+    }
+    return `${address.slice(0, chars)}…${address.slice(-chars)}`;
+  }
+
+  const currencyStore = {
+    walletAddress: window.GRMCState?.publicKey || null,
+    grmcBalance: window.GRMCState?.lastBalanceCheck?.totalBalance || 0,
+    chefcoins: window.GRMCState?.chefcoins || 0,
+    swapTaxBps: window.GRMCState?.swapTaxBps || window.GRMC_GATE_CONFIG?.swapTaxBps || 0,
+    minSwapAmount: window.GRMCState?.minSwapAmount || window.GRMC_GATE_CONFIG?.minSwapAmount || 1,
+    chefToGrmcEnabled: true,
+    chefToGrmcDisabledReason: '',
+    busy: false,
+    mode: null,
+  };
+
+  function getSwapConfig() {
+    const swapTaxBps = currencyStore.swapTaxBps || 0;
+    const minSwapAmount = Math.max(1, currencyStore.minSwapAmount || 1);
+    return { swapTaxBps, minSwapAmount };
+  }
+
+  function computeSwapTax(amount) {
+    const normalized = Math.max(0, Math.floor(Number(amount) || 0));
+    const { swapTaxBps } = getSwapConfig();
+    const tax = Math.floor((normalized * swapTaxBps) / 10_000);
+    const net = Math.max(0, normalized - tax);
+    return { tax, net };
+  }
+
+  async function fetchChefcoinBalance({ silent = false } = {}) {
+    if (!API_BASE || !window.GRMCState?.sessionJwt) {
+      currencyStore.chefcoins = window.GRMCState?.chefcoins || 0;
+      return currencyStore.chefcoins;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/currency/balances`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${window.GRMCState.sessionJwt}`,
+        },
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        if (!silent) {
+          console.warn('[GRMC] Failed to fetch ChefCoins balance', text);
+        }
+        return currencyStore.chefcoins;
+      }
+
+      const payload = await response.json();
+      const chefcoins = Number(payload?.chefcoins) || 0;
+      currencyStore.chefcoins = chefcoins;
+      window.GRMCState.chefcoins = chefcoins;
+      if (typeof payload?.wallet === 'string') {
+        currencyStore.walletAddress = payload.wallet;
+      }
+      if (typeof payload?.chefcoinsToGrmcEnabled === 'boolean') {
+        currencyStore.chefToGrmcEnabled = payload.chefcoinsToGrmcEnabled;
+      }
+      if (typeof payload?.chefcoinsToGrmcDisabledReason === 'string') {
+        currencyStore.chefToGrmcDisabledReason = payload.chefcoinsToGrmcDisabledReason;
+      }
+      window.emitWalletEvent?.('chefcoins-update', { chefcoins });
+      return chefcoins;
+    } catch (error) {
+      if (!silent) {
+        console.warn('[GRMC] ChefCoins balance fetch error', error);
+      }
+      return currencyStore.chefcoins;
+    }
+  }
+
+  async function awardChefCoins(amount, reason = 'level_clear') {
+    const normalized = Math.max(0, Math.floor(Number(amount) || 0));
+    if (!normalized) {
+      return null;
+    }
+    if (!API_BASE || !window.GRMCState?.sessionJwt) {
+      currencyStore.chefcoins += normalized;
+      window.GRMCState.chefcoins = currencyStore.chefcoins;
+      window.emitWalletEvent?.('chefcoins-update', { chefcoins: currencyStore.chefcoins });
+      return { chefcoins: currencyStore.chefcoins };
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/currency/earn`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${window.GRMCState.sessionJwt}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ amount: normalized, reason }),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        console.warn('[GRMC] ChefCoins earn failed', text);
+        return null;
+      }
+      const payload = await response.json();
+      const chefcoins = Number(payload?.chefcoins);
+      if (Number.isFinite(chefcoins)) {
+        currencyStore.chefcoins = chefcoins;
+        window.GRMCState.chefcoins = chefcoins;
+        window.emitWalletEvent?.('chefcoins-update', { chefcoins });
+      }
+      return payload;
+    } catch (error) {
+      console.warn('[GRMC] ChefCoins earn error', error);
+      return null;
+    }
+  }
+
   function buildDefaultWeeklyChallengeState(now = Date.now()) {
     return {
       version: 'v1',
@@ -170,7 +295,7 @@
       challenge.claimable = challenge.reward;
       if (!silent && challenge.reward > 0 && wasClaimable < challenge.reward) {
         showToast(
-          `${challenge.title} complete! Claim ${challenge.reward} GRMC from the rewards hub.`,
+          `${challenge.title} complete! Claim ${challenge.reward} ChefCoins from the rewards hub.`,
           'success',
           4200
         );
@@ -300,7 +425,8 @@
     saveWeeklyChallengesState(state);
     emitChallengeUpdate();
     window.emitWalletEvent?.('challenge-claimed', { challengeId, reward: challenge.reward });
-    showToast(`Claim submitted! ${challenge.reward} GRMC will be paid out soon.`, 'success');
+    await awardChefCoins(challenge.reward, 'weekly_challenge');
+    showToast(`Claimed ${challenge.reward} ChefCoins!`, 'success');
     return true;
   }
 
@@ -810,11 +936,80 @@
     }
   }
 
+  async function transferGrmcToDev(amountUi) {
+    ensureGlobalState();
+    if (!API_BASE) {
+      throw new Error('Backend API not configured.');
+    }
+    const sessionJwt = window.GRMCState?.sessionJwt;
+    if (!sessionJwt) {
+      throw new Error('Session not established. Connect your wallet first.');
+    }
+    if (typeof solanaWeb3 === 'undefined') {
+      throw new Error('Solana web3.js not available.');
+    }
+
+    const provider = window.solana || window.phantom?.solana;
+    if (!provider) {
+      throw new Error('No Solana wallet detected.');
+    }
+
+    const numericAmount = Math.max(0, Math.floor(Number(amountUi) || 0));
+    if (!numericAmount) {
+      throw new Error('Purchase amount must be greater than zero.');
+    }
+
+    const intentResponse = await fetch(`${API_BASE}/swap/grmc-to-chefcoins/intent`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${sessionJwt}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ amount: numericAmount, purpose: 'purchase' }),
+    });
+
+    if (!intentResponse.ok) {
+      const text = await intentResponse.text();
+      throw new Error(text || 'Unable to prepare GRMC transfer.');
+    }
+
+    const payload = await intentResponse.json();
+    if (!payload?.transaction) {
+      throw new Error('Backend did not return a transfer transaction.');
+    }
+
+    const raw = Uint8Array.from(atob(payload.transaction), (c) => c.charCodeAt(0));
+    const transaction = solanaWeb3.Transaction.from(raw);
+
+    if (typeof provider.signAndSendTransaction === 'function') {
+      const result = await provider.signAndSendTransaction(transaction);
+      return result?.signature || result;
+    }
+
+    if (typeof provider.signTransaction === 'function') {
+      const connection = window.GRMCWallet?.getConnection?.();
+      if (!connection) {
+        throw new Error('No RPC connection available to broadcast transaction.');
+      }
+      const signed = await provider.signTransaction(transaction);
+      const signature = await connection.sendRawTransaction(signed.serialize());
+      await connection.confirmTransaction(signature, 'confirmed');
+      return signature;
+    }
+
+    throw new Error('Wallet cannot sign transactions.');
+  }
+
   async function spendToken(itemId, { price, metadata } = {}) {
     ensureGlobalState();
     const sessionJwt = window.GRMCState?.sessionJwt;
-    const provider = window.solana;
+    const provider = window.solana || window.phantom?.solana;
     const normalizedPrice = typeof price === 'number' ? price : null;
+
+    if (!Number.isFinite(normalizedPrice) || normalizedPrice <= 0) {
+      console.warn('[GRMC] Invalid purchase price for', itemId, price);
+      return applyPurchaseLocally(itemId, metadata);
+    }
 
     if (!API_BASE || !sessionJwt || typeof provider?.signMessage !== 'function') {
       console.warn('[GRMC] Falling back to local purchase flow for', itemId);
@@ -844,13 +1039,19 @@
       const signatureResult = await provider.signMessage(encoded, 'utf8');
       const signatureArray = Array.from(signatureResult?.signature || signatureResult || []);
 
+      const transferSignature = await transferGrmcToDev(normalizedPrice);
+
       const confirmResponse = await fetch(`${API_BASE}/purchase/confirm`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${sessionJwt}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ intentId: intent?.id || intent?.intentId, signature: signatureArray, itemId }),
+        body: JSON.stringify({
+          intentId: intent?.id || intent?.intentId,
+          signature: transferSignature,
+          messageSignature: signatureArray,
+        }),
       });
 
       if (!confirmResponse.ok) {
@@ -863,6 +1064,7 @@
       const confirmation = await confirmResponse.json();
       if (confirmation?.ok) {
         applyPurchaseLocally(itemId, metadata);
+        await refreshCurrencyBalances({ silent: true });
         return true;
       }
 
@@ -870,7 +1072,7 @@
       return false;
     } catch (error) {
       console.error('[GRMC] Purchase error', error);
-      showToast('Something went wrong completing that purchase.', 'error');
+      showToast(error?.message || 'Something went wrong completing that purchase.', 'error');
       return false;
     }
   }
@@ -914,6 +1116,17 @@
     cosmeticsContent: document.getElementById('cosmetics-content'),
     rewards: document.getElementById('rewards-overlay'),
     rewardsContent: document.getElementById('rewards-content'),
+    currency: document.getElementById('currency-overlay'),
+    currencyContent: document.getElementById('currency-converter'),
+  };
+
+  const currencyUI = {
+    openButton: document.getElementById('currency-open-button'),
+    walletAddress: document.getElementById('currency-wallet-address'),
+    grmcBalance: document.getElementById('currency-grmc-balance'),
+    chefcoinsBalance: document.getElementById('currency-chefcoins-balance'),
+    grmcToChefButton: document.getElementById('currency-open-grmc-to-chef'),
+    chefToGrmcButton: document.getElementById('currency-open-chef-to-grmc'),
   };
 
   const overlayState = {
@@ -936,6 +1149,393 @@
         closeOverlay(parent);
       });
     });
+  }
+
+  function updateCurrencyView() {
+    const address = currencyStore.walletAddress || window.GRMCState?.publicKey || null;
+    if (currencyUI.walletAddress) {
+      const label = address ? shortenAddress(address, 5) : 'Not connected';
+      currencyUI.walletAddress.textContent = label;
+      currencyUI.walletAddress.title = address || 'Connect wallet to manage currency.';
+    }
+    if (currencyUI.grmcBalance) {
+      currencyUI.grmcBalance.textContent = formatTokenAmount(currencyStore.grmcBalance, {
+        fractionDigits: 6,
+      });
+    }
+    if (currencyUI.chefcoinsBalance) {
+      currencyUI.chefcoinsBalance.textContent = formatTokenAmount(currencyStore.chefcoins, {
+        fractionDigits: 0,
+      });
+    }
+    updateCurrencyButtons();
+  }
+
+  function updateCurrencyButtons() {
+    const hasWallet = Boolean(window.GRMCState?.publicKey);
+    const disabledByBusy = currencyStore.busy;
+    if (currencyUI.grmcToChefButton) {
+      const disabled = !hasWallet || disabledByBusy;
+      currencyUI.grmcToChefButton.disabled = disabled;
+      currencyUI.grmcToChefButton.title = hasWallet
+        ? disabledByBusy
+          ? 'Swap in progress…'
+          : ''
+        : 'Connect wallet to convert.';
+    }
+    if (currencyUI.chefToGrmcButton) {
+      let reason = '';
+      if (!hasWallet) {
+        reason = 'Connect wallet to convert.';
+      } else if (!currencyStore.chefToGrmcEnabled) {
+        reason = currencyStore.chefToGrmcDisabledReason || 'Temporarily unavailable.';
+      } else if (disabledByBusy) {
+        reason = 'Swap in progress…';
+      }
+      currencyUI.chefToGrmcButton.disabled = Boolean(reason);
+      currencyUI.chefToGrmcButton.title = reason;
+    }
+    if (currencyUI.openButton) {
+      currencyUI.openButton.disabled = disabledByBusy && Boolean(overlayRefs.currency && !overlayRefs.currency.hidden);
+    }
+  }
+
+  function renderCurrencyMessage(message, tone = 'note') {
+    const container = overlayRefs.currencyContent;
+    if (!container) return;
+    container.innerHTML = '';
+    const paragraph = document.createElement('p');
+    paragraph.className = tone === 'error' ? 'currency-converter__error' : 'currency-converter__note';
+    paragraph.textContent = message;
+    paragraph.hidden = false;
+    container.appendChild(paragraph);
+  }
+
+  async function refreshCurrencyBalances({ silent = false } = {}) {
+    const grmcWallet = window.GRMCWallet;
+    if (grmcWallet?.refreshGrmcBalance && window.GRMCState?.publicKey) {
+      const result = await grmcWallet.refreshGrmcBalance({ emitEvents: true });
+      if (result && Number.isFinite(result.totalBalance)) {
+        currencyStore.grmcBalance = result.totalBalance;
+      }
+    }
+    await fetchChefcoinBalance({ silent });
+    updateCurrencyView();
+  }
+
+  function renderCurrencyForm(direction) {
+    const container = overlayRefs.currencyContent;
+    if (!container) return;
+    container.innerHTML = '';
+    currencyStore.mode = direction;
+
+    const hasWallet = Boolean(window.GRMCState?.publicKey);
+    if (!hasWallet) {
+      renderCurrencyMessage('Connect wallet to use the converter.');
+      return;
+    }
+
+    if (direction === 'chef-to-grmc' && !currencyStore.chefToGrmcEnabled) {
+      renderCurrencyMessage(currencyStore.chefToGrmcDisabledReason || 'Conversion is temporarily unavailable.');
+      return;
+    }
+
+    const { swapTaxBps, minSwapAmount } = getSwapConfig();
+    const form = document.createElement('form');
+    form.className = 'currency-converter__form';
+
+    const field = document.createElement('div');
+    field.className = 'currency-converter__field';
+    const label = document.createElement('label');
+    label.textContent =
+      direction === 'grmc-to-chef' ? 'Amount of GRMC to convert' : 'Amount of ChefCoins to convert';
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = minSwapAmount;
+    input.step = 1;
+    input.required = true;
+    input.placeholder = `${minSwapAmount}`;
+    input.className = 'currency-converter__input';
+    field.append(label, input);
+
+    const summary = document.createElement('div');
+    summary.className = 'currency-converter__summary';
+    const taxLine = document.createElement('span');
+    const netLine = document.createElement('span');
+    summary.append(taxLine, netLine);
+
+    const note = document.createElement('p');
+    note.className = 'currency-converter__note';
+    note.textContent = 'Network fee will be paid by your wallet when signing.';
+
+    const actions = document.createElement('div');
+    actions.className = 'currency-converter__actions';
+    const submit = document.createElement('button');
+    submit.type = 'submit';
+    submit.className = 'currency-converter__submit';
+    submit.textContent = direction === 'grmc-to-chef' ? 'Sign & Convert' : 'Convert & Receive';
+    actions.appendChild(submit);
+
+    const errorEl = document.createElement('div');
+    errorEl.className = 'currency-converter__error';
+    errorEl.hidden = true;
+
+    const successEl = document.createElement('div');
+    successEl.className = 'currency-converter__success';
+    successEl.hidden = true;
+
+    form.append(field, summary, note, actions, errorEl, successEl);
+    container.appendChild(form);
+
+    const taxPercent = (swapTaxBps / 100).toFixed(2);
+    const updatePreview = () => {
+      const amount = Math.max(0, Math.floor(Number(input.value) || 0));
+      const { tax, net } = computeSwapTax(amount);
+      taxLine.innerHTML = `Dev tax (${taxPercent}%): <strong>${formatTokenAmount(tax, { fractionDigits: 0 })}</strong>`;
+      netLine.innerHTML = `Net received: <strong>${formatTokenAmount(net, { fractionDigits: 0 })}</strong>`;
+    };
+    updatePreview();
+
+    input.addEventListener('input', () => {
+      errorEl.hidden = true;
+      successEl.hidden = true;
+      updatePreview();
+    });
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      errorEl.hidden = true;
+      successEl.hidden = true;
+      const amount = Math.max(0, Math.floor(Number(input.value) || 0));
+      if (!amount || amount < minSwapAmount) {
+        errorEl.textContent = `Enter at least ${minSwapAmount} tokens to convert.`;
+        errorEl.hidden = false;
+        return;
+      }
+      if (direction === 'grmc-to-chef' && amount > Math.floor(currencyStore.grmcBalance)) {
+        errorEl.textContent = 'Amount exceeds your GRMC balance.';
+        errorEl.hidden = false;
+        return;
+      }
+      if (direction === 'chef-to-grmc' && amount > Math.floor(currencyStore.chefcoins)) {
+        errorEl.textContent = 'Amount exceeds your ChefCoins balance.';
+        errorEl.hidden = false;
+        return;
+      }
+
+      submit.disabled = true;
+      currencyStore.busy = true;
+      updateCurrencyButtons();
+      try {
+        if (direction === 'grmc-to-chef') {
+          const success = await handleGrmcToChefSwap(amount, { errorEl, successEl });
+          if (success) {
+            input.value = '';
+            updatePreview();
+          }
+        } else {
+          const success = await handleChefToGrmcSwap(amount, { errorEl, successEl });
+          if (success) {
+            input.value = '';
+            updatePreview();
+          }
+        }
+      } finally {
+        submit.disabled = false;
+        currencyStore.busy = false;
+        updateCurrencyButtons();
+      }
+    });
+  }
+
+  function renderCurrencyHome() {
+    currencyStore.mode = null;
+    if (!overlayRefs.currencyContent) return;
+    overlayRefs.currencyContent.innerHTML = '';
+    const intro = document.createElement('p');
+    intro.className = 'currency-converter__note';
+    intro.textContent = 'Select a conversion direction to begin.';
+    overlayRefs.currencyContent.appendChild(intro);
+  }
+
+  async function handleGrmcToChefSwap(amount, { errorEl, successEl }) {
+    if (!API_BASE || !window.GRMCState?.sessionJwt) {
+      errorEl.textContent = 'Session not established. Connect your wallet first.';
+      errorEl.hidden = false;
+      return false;
+    }
+    if (typeof solanaWeb3 === 'undefined') {
+      errorEl.textContent = 'Solana web3.js failed to load.';
+      errorEl.hidden = false;
+      return false;
+    }
+
+    const provider = window.solana || window.phantom?.solana;
+    if (!provider) {
+      errorEl.textContent = 'No Solana wallet detected. Install Phantom, Backpack, or another compatible wallet.';
+      errorEl.hidden = false;
+      return false;
+    }
+
+    try {
+      const intentResponse = await fetch(`${API_BASE}/swap/grmc-to-chefcoins/intent`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${window.GRMCState.sessionJwt}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ amount }),
+      });
+
+      if (!intentResponse.ok) {
+        const text = await intentResponse.text();
+        errorEl.textContent = text || 'Unable to create swap intent. Try again later.';
+        errorEl.hidden = false;
+        return false;
+      }
+
+      const intent = await intentResponse.json();
+      if (!intent?.transaction || !intent?.intentId) {
+        errorEl.textContent = 'Swap intent missing transaction payload.';
+        errorEl.hidden = false;
+        return false;
+      }
+
+      const raw = Uint8Array.from(atob(intent.transaction), (c) => c.charCodeAt(0));
+      const transaction = solanaWeb3.Transaction.from(raw);
+      let signature = null;
+
+      if (typeof provider.signAndSendTransaction === 'function') {
+        const result = await provider.signAndSendTransaction(transaction);
+        signature = result?.signature || result;
+      } else if (typeof provider.signTransaction === 'function') {
+        const signed = await provider.signTransaction(transaction);
+        const connection = window.GRMCWallet?.getConnection?.();
+        if (!connection) {
+          throw new Error('No RPC connection available to broadcast transaction.');
+        }
+        signature = await connection.sendRawTransaction(signed.serialize());
+        await connection.confirmTransaction(signature, 'confirmed');
+      } else {
+        throw new Error('Wallet does not support transaction signing.');
+      }
+
+      if (!signature) {
+        throw new Error('Transaction signature not returned by wallet.');
+      }
+
+      const confirmResponse = await fetch(`${API_BASE}/swap/grmc-to-chefcoins/confirm`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${window.GRMCState.sessionJwt}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ intentId: intent.intentId, signature }),
+      });
+
+      if (!confirmResponse.ok) {
+        const text = await confirmResponse.text();
+        errorEl.textContent = text || 'Swap confirmation failed. Verify the transaction signature and try again.';
+        errorEl.hidden = false;
+        return false;
+      }
+
+      const payload = await confirmResponse.json();
+      if (Number.isFinite(payload?.chefcoins)) {
+        currencyStore.chefcoins = payload.chefcoins;
+        window.GRMCState.chefcoins = payload.chefcoins;
+        window.emitWalletEvent?.('chefcoins-update', { chefcoins: payload.chefcoins });
+      }
+      await refreshCurrencyBalances({ silent: true });
+      const preview = computeSwapTax(amount);
+      successEl.textContent = `Swap confirmed! You received ${preview.net} ChefCoins. Signature: ${signature}`;
+      successEl.hidden = false;
+      showToast(`Converted ${amount} GRMC for ${preview.net} ChefCoins.`, 'success');
+      return true;
+    } catch (error) {
+      console.warn('[GRMC] GRMC→ChefCoins swap error', error);
+      errorEl.textContent = error?.message || 'Unexpected error during swap.';
+      errorEl.hidden = false;
+      return false;
+    }
+  }
+
+  async function handleChefToGrmcSwap(amount, { errorEl, successEl }) {
+    if (!API_BASE || !window.GRMCState?.sessionJwt) {
+      errorEl.textContent = 'Session not established. Connect your wallet first.';
+      errorEl.hidden = false;
+      return false;
+    }
+
+    const destination = window.GRMCState?.publicKey;
+    if (!destination) {
+      errorEl.textContent = 'Connect wallet to receive GRMC.';
+      errorEl.hidden = false;
+      return false;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/swap/chefcoins-to-grmc`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${window.GRMCState.sessionJwt}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ amount, destination }),
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        errorEl.textContent = text || 'Unable to complete conversion right now.';
+        errorEl.hidden = false;
+        return false;
+      }
+
+      const payload = await response.json();
+      if (Number.isFinite(payload?.chefcoins)) {
+        currencyStore.chefcoins = payload.chefcoins;
+        window.GRMCState.chefcoins = payload.chefcoins;
+        window.emitWalletEvent?.('chefcoins-update', { chefcoins: payload.chefcoins });
+      }
+      await refreshCurrencyBalances({ silent: true });
+
+      const preview = computeSwapTax(amount);
+      const signature = payload?.signature;
+      successEl.textContent = signature
+        ? `Treasury sent ${preview.net} GRMC. Signature: ${signature}`
+        : `Treasury sent ${preview.net} GRMC.`;
+      successEl.hidden = false;
+      if (signature) {
+        const explorerLink = document.createElement('a');
+        explorerLink.href = `https://solscan.io/tx/${signature}`;
+        explorerLink.target = '_blank';
+        explorerLink.rel = 'noreferrer';
+        explorerLink.textContent = 'View on Solscan';
+        explorerLink.className = 'currency-converter__note';
+        overlayRefs.currencyContent?.appendChild(explorerLink);
+      }
+      showToast(`Treasury sent ${preview.net} GRMC to your wallet.`, 'success');
+      return true;
+    } catch (error) {
+      console.warn('[GRMC] ChefCoins→GRMC swap error', error);
+      errorEl.textContent = error?.message || 'Unexpected error during conversion.';
+      errorEl.hidden = false;
+      return false;
+    }
+  }
+
+  async function openCurrencyOverlay(direction = null) {
+    if (!overlayRefs.currency) {
+      return;
+    }
+    overlayRefs.currency.hidden = false;
+    updateCurrencyView();
+    if (direction) {
+      renderCurrencyForm(direction);
+    } else {
+      renderCurrencyHome();
+    }
+    await refreshCurrencyBalances({ silent: true });
   }
 
   function renderShopItems() {
@@ -1130,7 +1730,7 @@
 
     const weeklySummary = document.createElement('p');
     weeklySummary.className = 'grmc-rewards-section__summary';
-    weeklySummary.textContent = `Claimable this week: ${claimableTotal} GRMC`;
+    weeklySummary.textContent = `Claimable this week: ${claimableTotal} ChefCoins`;
 
     const weeklyGrid = document.createElement('div');
     weeklyGrid.className = 'grmc-rewards-grid';
@@ -1174,7 +1774,7 @@
       const actionButton = document.createElement('button');
       actionButton.className = 'grmc-reward-card__button';
       if (challenge.claimable) {
-        actionButton.textContent = `Claim ${challenge.reward} GRMC`;
+        actionButton.textContent = `Claim ${challenge.reward} ChefCoins`;
         actionButton.addEventListener('click', async () => {
           actionButton.disabled = true;
           const ok = await claimWeeklyChallenge(challenge.id);
@@ -1387,6 +1987,63 @@
   };
 
   attachOverlayListeners();
+
+  if (currencyUI.openButton) {
+    currencyUI.openButton.addEventListener('click', () => openCurrencyOverlay());
+  }
+  if (currencyUI.grmcToChefButton) {
+    currencyUI.grmcToChefButton.addEventListener('click', () => openCurrencyOverlay('grmc-to-chef'));
+  }
+  if (currencyUI.chefToGrmcButton) {
+    currencyUI.chefToGrmcButton.addEventListener('click', () => openCurrencyOverlay('chef-to-grmc'));
+  }
+
+  updateCurrencyView();
+
+  let walletEventsAttached = false;
+  function attachWalletEventHandlers() {
+    if (walletEventsAttached || typeof window.onWalletEvent !== 'function') {
+      return;
+    }
+    walletEventsAttached = true;
+    window.onWalletEvent('balance-update', (event) => {
+      if (Number.isFinite(event.detail?.totalBalance)) {
+        currencyStore.grmcBalance = event.detail.totalBalance;
+        updateCurrencyView();
+      }
+    });
+    window.onWalletEvent('grmc-balance', (event) => {
+      if (Number.isFinite(event.detail?.totalBalance)) {
+        currencyStore.grmcBalance = event.detail.totalBalance;
+        updateCurrencyView();
+      }
+    });
+    window.onWalletEvent('chefcoins-update', (event) => {
+      if (Number.isFinite(event.detail?.chefcoins)) {
+        currencyStore.chefcoins = event.detail.chefcoins;
+        updateCurrencyView();
+      }
+    });
+    window.onWalletEvent('access-update', (event) => {
+      currencyStore.walletAddress = event.detail?.publicKey || window.GRMCState?.publicKey || null;
+      updateCurrencyView();
+    });
+    window.onWalletEvent('session', () => {
+      fetchChefcoinBalance({ silent: true }).then(() => updateCurrencyView());
+    });
+    window.onWalletEvent('swap-config', (event) => {
+      if (Number.isFinite(event.detail?.swapTaxBps)) {
+        currencyStore.swapTaxBps = event.detail.swapTaxBps;
+      }
+      if (Number.isFinite(event.detail?.minSwapAmount)) {
+        currencyStore.minSwapAmount = Math.max(1, Math.floor(event.detail.minSwapAmount));
+      }
+      updateCurrencyButtons();
+    });
+  }
+
+  attachWalletEventHandlers();
+  window.addEventListener('grmc-wallet-api-ready', attachWalletEventHandlers, { once: true });
 
   const DIFFICULTY_LABELS = {
     easy: 'Easy',
@@ -2713,6 +3370,10 @@
         levelName: this.levelConfig.name,
         tournamentMode: this.tournamentMode?.id || null,
       });
+      if (passed && this.score > 0) {
+        const baseReward = Math.max(5, Math.round(this.score / 12));
+        awardChefCoins(baseReward, 'level_clear');
+      }
       handleServiceChallengeProgress({
         score: this.score,
         completed: this.completedOrders,
