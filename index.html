@@ -8,6 +8,34 @@
   </head>
   <body>
     <main id="game-root" aria-label="Gordon Ramsay's Minecraft kitchen"></main>
+    <div id="boot-spinner" class="boot-spinner" role="status" aria-live="polite">
+      <div class="boot-spinner__icon" aria-hidden="true"></div>
+      <p class="boot-spinner__text">Loading Gordon's kitchen…</p>
+    </div>
+    <div
+      id="fatal-overlay"
+      class="fatal-overlay"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="fatal-overlay-title"
+      tabindex="-1"
+      hidden
+    >
+      <div class="fatal-overlay__panel">
+        <h2 id="fatal-overlay-title">Kitchen crash detected</h2>
+        <p>
+          Something prevented the game from loading. The exact error has been captured below so you can fix it without
+          digging through the console.
+        </p>
+        <pre id="fatal-overlay-message" class="fatal-overlay__message msg" tabindex="0"></pre>
+        <div class="fatal-overlay__actions">
+          <button id="fatal-overlay-reload" type="button" class="fatal-overlay__button">Reload</button>
+          <button id="fatal-overlay-dismiss" type="button" class="fatal-overlay__button fatal-overlay__button--ghost">
+            Dismiss
+          </button>
+        </div>
+      </div>
+    </div>
     <button id="currency-open-button" class="currency-open-button" type="button" aria-haspopup="dialog">
       Wallet &amp; Currency
     </button>
@@ -70,6 +98,10 @@
           Need a compatible wallet? <a href="https://phantom.app/" target="_blank" rel="noreferrer">Install Phantom</a>
           or any Solana wallet that injects <code>window.solana</code>.
         </p>
+        <p class="wallet-gate__helper wallet-gate__helper--dev">
+          Wallet integration help: <a href="https://docs.phantom.com/solana/integrating-phantom" target="_blank" rel="noreferrer">Follow Phantom’s signing guide</a>
+          or review the <a href="https://solana.com/docs/rpc/http/gettokenaccountsbyowner" target="_blank" rel="noreferrer">Solana RPC docs</a> for cluster setup tips.
+        </p>
       </div>
     </div>
     <div class="screen-reader-help" aria-live="polite">
@@ -81,14 +113,17 @@
       (function configureGrmcGate() {
         const existing = window.GRMC_GATE_CONFIG || {};
         const search = new URLSearchParams(window.location.search);
-        const storedRpc =
-          localStorage.getItem('GRMC_RPC_ENDPOINT') ||
-          localStorage.getItem('RPC_ENDPOINT') ||
-          existing.rpcEndpoint;
+        const demoEnabled = search.get('demo') === '1' || search.get('demoMode') === '1' || search.has('demo');
+
         const storedCluster =
-          localStorage.getItem('GRMC_SOL_CLUSTER') ||
           localStorage.getItem('SOL_CLUSTER') ||
-          existing.cluster;
+          localStorage.getItem('GRMC_SOL_CLUSTER') ||
+          existing.cluster || 'mainnet-beta';
+
+        const storedEndpoint =
+          localStorage.getItem('RPC_ENDPOINT') ||
+          localStorage.getItem('GRMC_RPC_ENDPOINT') ||
+          existing.rpcEndpoint || 'https://api.mainnet-beta.solana.com';
 
         const inferCluster = (endpoint) => {
           if (!endpoint || typeof endpoint !== 'string') {
@@ -101,25 +136,24 @@
           return 'mainnet-beta';
         };
 
-        const defaultMint = '6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK';
-        const rpcEndpoint = storedRpc || existing.rpcEndpoint || 'https://api.mainnet-beta.solana.com';
+        const defaultMint = existing.mintAddress || '6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK';
+        const rpcEndpoint = storedEndpoint || 'https://api.mainnet-beta.solana.com';
         const cluster = storedCluster || inferCluster(rpcEndpoint);
-        const demoParam = search.has('demo') || search.get('demoMode') === '1' || search.get('demo') === '1';
 
         window.GRMC_GATE_CONFIG = {
           ...existing,
-          mintAddress: existing.mintAddress || defaultMint,
+          mintAddress: defaultMint,
+          cluster: cluster || inferCluster(rpcEndpoint),
           rpcEndpoint,
-          cluster,
           minTokenBalance: existing.minTokenBalance ?? 1,
-          apiBase: existing.apiBase || 'https://api.example.com',
+          apiBase: existing.apiBase || '',
           devWalletAddress:
             typeof existing.devWalletAddress === 'string' && existing.devWalletAddress
               ? existing.devWalletAddress
               : '9Ctm5fCGoLrdXVZAkdKNBZnkf3YF5qD4Ejjdge4cmaWX',
           swapTaxBps: Number.isFinite(existing.swapTaxBps) ? existing.swapTaxBps : 300,
           minSwapAmount: Number.isFinite(existing.minSwapAmount) ? existing.minSwapAmount : 1,
-          devBypass: Boolean(existing.devBypass ?? demoParam),
+          devBypass: Boolean(existing.devBypass ?? demoEnabled),
         };
       })();
     </script>

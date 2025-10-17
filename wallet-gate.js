@@ -208,12 +208,16 @@
             const current = localStorage.getItem(STORAGE_KEYS.cluster) || desiredCluster;
             const manual = window.prompt('Enter custom cluster label', current || 'mainnet-beta');
             if (manual && manual.trim()) {
-              localStorage.setItem(STORAGE_KEYS.cluster, manual.trim());
+              const trimmed = manual.trim();
+              localStorage.setItem(STORAGE_KEYS.cluster, trimmed);
+              localStorage.setItem('SOL_CLUSTER', trimmed);
             } else {
               localStorage.removeItem(STORAGE_KEYS.cluster);
+              localStorage.removeItem('SOL_CLUSTER');
             }
           } else {
             localStorage.setItem(STORAGE_KEYS.cluster, value);
+            localStorage.setItem('SOL_CLUSTER', value);
           }
         } catch (error) {
           console.warn('[GRMC Gate] Unable to persist cluster selection:', error);
@@ -232,8 +236,10 @@
         try {
           if (value) {
             localStorage.setItem(STORAGE_KEYS.rpcEndpoint, value);
+            localStorage.setItem('RPC_ENDPOINT', value);
           } else {
             localStorage.removeItem(STORAGE_KEYS.rpcEndpoint);
+            localStorage.removeItem('RPC_ENDPOINT');
           }
         } catch (error) {
           console.warn('[GRMC Gate] Unable to persist RPC endpoint:', error);
@@ -247,6 +253,8 @@
         try {
           localStorage.removeItem(STORAGE_KEYS.rpcEndpoint);
           localStorage.removeItem('RPC_ENDPOINT');
+          localStorage.removeItem(STORAGE_KEYS.cluster);
+          localStorage.removeItem('SOL_CLUSTER');
         } catch (error) {
           console.warn('[GRMC Gate] Unable to clear RPC endpoint overrides:', error);
         }
@@ -380,6 +388,10 @@
     return;
   }
 
+  overlay.style.pointerEvents = 'auto';
+  overlay.classList.remove('wallet-gate--hidden');
+  overlay.removeAttribute('aria-hidden');
+
   function setStatus(message) {
     statusEl.textContent = message || '';
   }
@@ -406,7 +418,52 @@
   }
 
   function hideOverlay() {
+    if (!overlay) {
+      return;
+    }
     overlay.hidden = true;
+    overlay.setAttribute('aria-hidden', 'true');
+    overlay.classList.add('wallet-gate--hidden');
+    overlay.style.pointerEvents = 'none';
+  }
+
+  function launchGameScene({ directGame = false } = {}) {
+    hideOverlay();
+    const createInstance = window.BlockyKitchenGame?.create;
+    if (typeof createInstance !== 'function') {
+      console.warn('[GRMC Gate] Game instance factory not ready.');
+      return;
+    }
+    const instance = createInstance();
+    if (!instance?.scene) {
+      console.warn('[GRMC Gate] Game scene manager unavailable.');
+      return;
+    }
+    const preferGame = directGame && instance.scene.keys?.GameScene;
+    const targetScene = preferGame
+      ? 'GameScene'
+      : instance.scene.keys?.TitleScene
+        ? 'TitleScene'
+        : instance.scene.keys?.BootScene
+          ? 'BootScene'
+          : null;
+    if (!targetScene) {
+      console.warn('[GRMC Gate] Unable to determine target scene.');
+      return;
+    }
+    setTimeout(() => {
+      try {
+        if (typeof window.hideBootSpinner === 'function') {
+          window.hideBootSpinner('walletGate');
+        }
+        instance.scene.start(targetScene);
+      } catch (error) {
+        console.error('[GRMC Gate] Failed to start Phaser scene:', error);
+        if (typeof window.showFatalError === 'function') {
+          window.showFatalError(error);
+        }
+      }
+    }, 0);
   }
 
   function launchGameScene({ directGame = false } = {}) {
@@ -570,6 +627,12 @@
 
   function resetGateMessaging() {
     hasVerifiedToken = false;
+    if (overlay) {
+      overlay.hidden = false;
+      overlay.removeAttribute('aria-hidden');
+      overlay.classList.remove('wallet-gate--hidden');
+      overlay.style.pointerEvents = 'auto';
+    }
     const baselineMessage = config.devBypass
       ? 'Demo mode active. Full access is unlocked without wallet verification.'
       : 'A GRMC balance check is required before full access begins.';
@@ -1120,7 +1183,7 @@
         publicKey: window.GRMCState.publicKey,
       });
       console.warn('[GRMC Gate] Entering restricted kitchen mode.');
-      launchGameScene();
+      launchGameScene({ directGame: true });
       return;
     }
 
@@ -1139,7 +1202,7 @@
       publicKey: window.GRMCState.publicKey,
     });
     console.info('[GRMC Gate] Starting full access kitchen experience.');
-    launchGameScene();
+    launchGameScene({ directGame: true });
   }
 
   function startTrial() {
@@ -1150,8 +1213,8 @@
     applyAccessStyles();
     window.emitWalletEvent('access-update', { isHolder: false, trialMode: true, restrictedAccess: false });
     window.emitWalletEvent('trial-started', { trialMode: true });
-    console.info('[GRMC Gate] Trial mode launching TitleScene.');
-    launchGameScene();
+    console.info('[GRMC Gate] Trial mode launching GameScene.');
+    launchGameScene({ directGame: true });
   }
 
   startButton?.addEventListener('click', startFullAccess);
