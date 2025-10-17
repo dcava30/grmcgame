@@ -8,6 +8,37 @@
   </head>
   <body>
     <main id="game-root" aria-label="Gordon Ramsay's Minecraft kitchen"></main>
+    <div id="boot-spinner" class="boot-spinner" role="status" aria-live="polite">
+      <div class="boot-spinner__icon" aria-hidden="true"></div>
+      <p class="boot-spinner__text">Loading Gordon's kitchen…</p>
+    </div>
+    <div
+      id="fatal-overlay"
+      class="fatal-overlay"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="fatal-overlay-title"
+      tabindex="-1"
+      hidden
+    >
+      <div class="fatal-overlay__panel">
+        <h2 id="fatal-overlay-title">Kitchen crash detected</h2>
+        <p>
+          Something prevented the game from loading. The exact error has been captured below so you can fix it without
+          digging through the console.
+        </p>
+        <pre id="fatal-overlay-message" class="fatal-overlay__message msg" tabindex="0"></pre>
+        <div class="fatal-overlay__actions">
+          <button id="fatal-overlay-reload" type="button" class="fatal-overlay__button">Reload</button>
+          <button id="fatal-overlay-dismiss" type="button" class="fatal-overlay__button fatal-overlay__button--ghost">
+            Dismiss
+          </button>
+        </div>
+      </div>
+    </div>
+    <button id="currency-open-button" class="currency-open-button" type="button" aria-haspopup="dialog">
+      Wallet &amp; Currency
+    </button>
     <div id="wallet-gate-overlay" role="dialog" aria-modal="true" aria-labelledby="gate-title">
       <div class="wallet-gate__panel">
         <h1 id="gate-title">Connect Your Solana Wallet</h1>
@@ -26,7 +57,39 @@
         </div>
         <div id="wallet-loading" class="wallet-gate__loading" aria-live="polite" hidden>Verifying GRMC balance…</div>
         <div id="wallet-status" class="wallet-gate__status" aria-live="polite"></div>
+        <p id="wallet-cluster-indicator" class="wallet-gate__cluster" aria-live="polite"></p>
         <div id="wallet-error" class="wallet-gate__error" role="alert" hidden></div>
+        <div class="wallet-gate__devtools">
+          <label class="wallet-gate__devtoggle" for="wallet-demo-checkbox">
+            <input type="checkbox" id="wallet-demo-checkbox" />
+            Enable Demo Mode (skip wallet requirement)
+          </label>
+          <details id="wallet-dev-settings" class="wallet-gate__devpanel">
+            <summary>Developer Settings</summary>
+            <div class="wallet-gate__devpanel-row">
+              <label for="wallet-cluster-select">Cluster</label>
+              <select id="wallet-cluster-select">
+                <option value="mainnet-beta">Mainnet Beta</option>
+                <option value="devnet">Devnet</option>
+                <option value="testnet">Testnet</option>
+                <option value="localnet">Localnet</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+            <div class="wallet-gate__devpanel-row">
+              <label for="wallet-rpc-input">RPC Endpoint</label>
+              <input id="wallet-rpc-input" type="url" placeholder="https://your-provider.example.com" />
+            </div>
+            <div class="wallet-gate__devpanel-actions">
+              <button type="button" id="wallet-save-rpc">Save RPC</button>
+              <button type="button" id="wallet-reset-rpc">Reset</button>
+            </div>
+            <p class="wallet-gate__devpanel-note">
+              Settings persist locally. Use a dedicated RPC (Helius, QuickNode, Alchemy, etc.) to avoid public endpoint rate
+              limits.
+            </p>
+          </details>
+        </div>
         <p class="wallet-gate__helper">
           Don’t have GRMC yet? <a href="https://raydium.io/swap/?inputMint=sol&amp;outputMint=6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK&amp;referrer=7i5775tjSXaXut3KtahGmFTEuqY6TB3dS2BgDARdRYAd" target="_blank" rel="noreferrer">Buy GRMC on Raydium</a>
           to unlock every perk instantly, or hop into the free trial first.
@@ -34,6 +97,10 @@
         <p class="wallet-gate__helper">
           Need a compatible wallet? <a href="https://phantom.app/" target="_blank" rel="noreferrer">Install Phantom</a>
           or any Solana wallet that injects <code>window.solana</code>.
+        </p>
+        <p class="wallet-gate__helper wallet-gate__helper--dev">
+          Wallet integration help: <a href="https://docs.phantom.com/solana/integrating-phantom" target="_blank" rel="noreferrer">Follow Phantom’s signing guide</a>
+          or review the <a href="https://solana.com/docs/rpc/http/gettokenaccountsbyowner" target="_blank" rel="noreferrer">Solana RPC docs</a> for cluster setup tips.
         </p>
       </div>
     </div>
@@ -43,12 +110,52 @@
       clock expires.
     </div>
     <script>
-      window.GRMC_GATE_CONFIG = {
-        mintAddress: '6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK',
-        rpcEndpoint: 'https://api.mainnet-beta.solana.com',
-        minTokenBalance: 1,
-        apiBase: 'https://api.example.com',
-      };
+      (function configureGrmcGate() {
+        const existing = window.GRMC_GATE_CONFIG || {};
+        const search = new URLSearchParams(window.location.search);
+        const demoEnabled = search.get('demo') === '1' || search.get('demoMode') === '1' || search.has('demo');
+
+        const storedCluster =
+          localStorage.getItem('SOL_CLUSTER') ||
+          localStorage.getItem('GRMC_SOL_CLUSTER') ||
+          existing.cluster || 'mainnet-beta';
+
+        const storedEndpoint =
+          localStorage.getItem('RPC_ENDPOINT') ||
+          localStorage.getItem('GRMC_RPC_ENDPOINT') ||
+          existing.rpcEndpoint || 'https://api.mainnet-beta.solana.com';
+
+        const inferCluster = (endpoint) => {
+          if (!endpoint || typeof endpoint !== 'string') {
+            return 'mainnet-beta';
+          }
+          const lowered = endpoint.toLowerCase();
+          if (lowered.includes('devnet')) return 'devnet';
+          if (lowered.includes('testnet')) return 'testnet';
+          if (lowered.includes('localhost') || lowered.includes('127.0.0.1')) return 'localnet';
+          return 'mainnet-beta';
+        };
+
+        const defaultMint = existing.mintAddress || '6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK';
+        const rpcEndpoint = storedEndpoint || 'https://api.mainnet-beta.solana.com';
+        const cluster = storedCluster || inferCluster(rpcEndpoint);
+
+        window.GRMC_GATE_CONFIG = {
+          ...existing,
+          mintAddress: defaultMint,
+          cluster: cluster || inferCluster(rpcEndpoint),
+          rpcEndpoint,
+          minTokenBalance: existing.minTokenBalance ?? 1,
+          apiBase: existing.apiBase || '',
+          devWalletAddress:
+            typeof existing.devWalletAddress === 'string' && existing.devWalletAddress
+              ? existing.devWalletAddress
+              : '9Ctm5fCGoLrdXVZAkdKNBZnkf3YF5qD4Ejjdge4cmaWX',
+          swapTaxBps: Number.isFinite(existing.swapTaxBps) ? existing.swapTaxBps : 300,
+          minSwapAmount: Number.isFinite(existing.minSwapAmount) ? existing.minSwapAmount : 1,
+          devBypass: Boolean(existing.devBypass ?? demoEnabled),
+        };
+      })();
     </script>
     <div id="shop-overlay" class="grmc-overlay" role="dialog" aria-modal="true" aria-labelledby="shop-title" hidden>
       <div class="grmc-overlay__panel">
@@ -89,6 +196,51 @@
           <button type="button" class="grmc-overlay__close" data-close-overlay>&times;</button>
         </div>
         <div class="grmc-overlay__content" id="rewards-content" aria-live="polite"></div>
+      </div>
+    </div>
+    <div
+      id="currency-overlay"
+      class="grmc-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="currency-title"
+      hidden
+    >
+      <div class="grmc-overlay__panel currency-overlay__panel">
+        <div class="grmc-overlay__header">
+          <h2 id="currency-title">Wallet &amp; Currency</h2>
+          <span id="currency-cluster-indicator" class="currency-cluster-indicator" aria-live="polite"></span>
+          <button type="button" class="grmc-overlay__close" data-close-overlay>&times;</button>
+        </div>
+        <section class="currency-balances" aria-live="polite">
+          <div class="currency-balance__row">
+            <span class="currency-balance__label">Wallet:</span>
+            <span id="currency-wallet-address" class="currency-balance__value">Not connected</span>
+          </div>
+          <div class="currency-balance__row">
+            <span class="currency-balance__label">GRMC (on-chain):</span>
+            <span id="currency-grmc-balance" class="currency-balance__value">0</span>
+          </div>
+          <div class="currency-balance__row">
+            <span class="currency-balance__label">ChefCoins (off-chain):</span>
+            <span id="currency-chefcoins-balance" class="currency-balance__value">0</span>
+          </div>
+        </section>
+        <section class="currency-actions">
+          <button id="currency-open-grmc-to-chef" class="currency-action-button" type="button">
+            Convert GRMC → ChefCoins
+          </button>
+          <button id="currency-open-chef-to-grmc" class="currency-action-button" type="button">
+            Convert ChefCoins → GRMC
+          </button>
+        </section>
+        <section id="currency-converter" class="currency-converter" aria-live="polite"></section>
+        <div id="currency-diagnostics" class="currency-diagnostics" hidden>
+          <details id="currency-diagnostics-details">
+            <summary>Why am I seeing 0 GRMC?</summary>
+            <ul id="currency-diagnostics-list" class="currency-diagnostics__list"></ul>
+          </details>
+        </div>
       </div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js" integrity="sha256-ONKM0xPNW3HIjh//ZQzQpLCPOfmU52nlFqYMiEa3OcM=" crossorigin="anonymous"></script>
