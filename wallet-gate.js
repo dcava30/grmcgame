@@ -466,39 +466,6 @@
     }, 0);
   }
 
-  function launchGameScene({ directGame = false } = {}) {
-    hideOverlay();
-    const createInstance = window.BlockyKitchenGame?.create;
-    if (typeof createInstance !== 'function') {
-      console.warn('[GRMC Gate] Game instance factory not ready.');
-      return;
-    }
-    const instance = createInstance();
-    if (!instance?.scene) {
-      console.warn('[GRMC Gate] Game scene manager unavailable.');
-      return;
-    }
-    const preferGame = directGame && instance.scene.keys?.GameScene;
-    const targetScene = preferGame
-      ? 'GameScene'
-      : instance.scene.keys?.TitleScene
-        ? 'TitleScene'
-        : instance.scene.keys?.BootScene
-          ? 'BootScene'
-          : null;
-    if (!targetScene) {
-      console.warn('[GRMC Gate] Unable to determine target scene.');
-      return;
-    }
-    setTimeout(() => {
-      try {
-        instance.scene.start(targetScene);
-      } catch (error) {
-        console.error('[GRMC Gate] Failed to start Phaser scene:', error);
-      }
-    }, 0);
-  }
-
   function applyAccessStyles() {
     document.body.classList.toggle('holder-mode', Boolean(window.GRMCState.isHolder));
     document.body.classList.toggle('trial-mode', Boolean(window.GRMCState.trialMode));

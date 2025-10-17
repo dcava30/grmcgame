@@ -98,6 +98,19 @@
     showFatalError(event.reason || event);
   });
 
+  function assertPhaserReady() {
+    if (window.Phaser && typeof window.Phaser.Game === 'function') {
+      return;
+    }
+    const error = new Error('Phaser global missing — ensure the Phaser CDN script loads before game.js');
+    if (typeof window.showFatalError === 'function') {
+      window.showFatalError(error);
+    } else {
+      console.error(error);
+    }
+    throw error;
+  }
+
   const STORAGE_KEYS = {
     cosmeticsOwned: 'grmc_cosmetics_owned_v1',
     cosmeticsEquipped: 'grmc_cosmetics_equipped_v1',
@@ -4203,30 +4216,43 @@
   }
 
   function createGameInstance() {
-    if (window.blockyKitchenGame) {
-      return window.blockyKitchenGame;
+    const existing = window.blockyKitchenGame;
+    if (existing) {
+      return existing;
     }
 
-    const game = new Phaser.Game({
-      type: Phaser.AUTO,
-      width: GAME_WIDTH,
-      height: GAME_HEIGHT,
-      backgroundColor: '#10131a',
-      parent: 'game-root',
-      pixelArt: true,
-      scene: [BootScene, GameScene, UIScene],
-      physics: {
-        default: 'arcade',
-        arcade: {
-          gravity: { y: 0 },
-          debug: false,
+    assertPhaserReady();
+
+    const PhaserGlobal = window.Phaser;
+
+    let game;
+    try {
+      game = new PhaserGlobal.Game({
+        type: PhaserGlobal.AUTO,
+        width: GAME_WIDTH,
+        height: GAME_HEIGHT,
+        backgroundColor: '#10131a',
+        parent: 'game-root',
+        pixelArt: true,
+        scene: [BootScene, GameScene, UIScene],
+        physics: {
+          default: 'arcade',
+          arcade: {
+            gravity: { y: 0 },
+            debug: false,
+          },
         },
-      },
-      scale: {
-        mode: Phaser.Scale.FIT,
-        autoCenter: Phaser.Scale.CENTER_BOTH,
-      },
-    });
+        scale: {
+          mode: PhaserGlobal.Scale.FIT,
+          autoCenter: PhaserGlobal.Scale.CENTER_BOTH,
+        },
+      });
+    } catch (error) {
+      if (typeof window.showFatalError === 'function') {
+        window.showFatalError(error);
+      }
+      throw error;
+    }
 
     window.blockyKitchenGame = game;
     return game;
@@ -4235,4 +4261,5 @@
   window.BlockyKitchenGame = {
     create: createGameInstance,
   };
+  window.assertPhaserReady = assertPhaserReady;
 })();

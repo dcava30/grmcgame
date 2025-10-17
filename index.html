@@ -113,47 +113,45 @@
       (function configureGrmcGate() {
         const existing = window.GRMC_GATE_CONFIG || {};
         const search = new URLSearchParams(window.location.search);
-        const demoEnabled = search.get('demo') === '1' || search.get('demoMode') === '1' || search.has('demo');
+        const demoEnabled =
+          search.get('demo') === '1' || search.get('demoMode') === '1' || search.has('demo') || existing.devBypass;
 
         const storedCluster =
           localStorage.getItem('SOL_CLUSTER') ||
           localStorage.getItem('GRMC_SOL_CLUSTER') ||
-          existing.cluster || 'mainnet-beta';
+          existing.cluster ||
+          'mainnet-beta';
 
         const storedEndpoint =
           localStorage.getItem('RPC_ENDPOINT') ||
           localStorage.getItem('GRMC_RPC_ENDPOINT') ||
-          existing.rpcEndpoint || 'https://api.mainnet-beta.solana.com';
+          existing.rpcEndpoint ||
+          'https://api.mainnet-beta.solana.com';
 
-        const inferCluster = (endpoint) => {
-          if (!endpoint || typeof endpoint !== 'string') {
-            return 'mainnet-beta';
-          }
-          const lowered = endpoint.toLowerCase();
-          if (lowered.includes('devnet')) return 'devnet';
-          if (lowered.includes('testnet')) return 'testnet';
-          if (lowered.includes('localhost') || lowered.includes('127.0.0.1')) return 'localnet';
-          return 'mainnet-beta';
-        };
+        const cluster = typeof storedCluster === 'string' && storedCluster.trim()
+          ? storedCluster.trim()
+          : 'mainnet-beta';
+        const rpcEndpoint = typeof storedEndpoint === 'string' && storedEndpoint.trim()
+          ? storedEndpoint.trim()
+          : 'https://api.mainnet-beta.solana.com';
 
-        const defaultMint = existing.mintAddress || '6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK';
-        const rpcEndpoint = storedEndpoint || 'https://api.mainnet-beta.solana.com';
-        const cluster = storedCluster || inferCluster(rpcEndpoint);
+        const swapTax = Number(existing.swapTaxBps);
+        const minSwap = Number(existing.minSwapAmount);
 
         window.GRMC_GATE_CONFIG = {
           ...existing,
-          mintAddress: defaultMint,
-          cluster: cluster || inferCluster(rpcEndpoint),
+          mintAddress: '6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK',
+          cluster,
           rpcEndpoint,
           minTokenBalance: existing.minTokenBalance ?? 1,
+          devBypass: Boolean(demoEnabled),
           apiBase: existing.apiBase || '',
           devWalletAddress:
             typeof existing.devWalletAddress === 'string' && existing.devWalletAddress
               ? existing.devWalletAddress
               : '9Ctm5fCGoLrdXVZAkdKNBZnkf3YF5qD4Ejjdge4cmaWX',
-          swapTaxBps: Number.isFinite(existing.swapTaxBps) ? existing.swapTaxBps : 300,
-          minSwapAmount: Number.isFinite(existing.minSwapAmount) ? existing.minSwapAmount : 1,
-          devBypass: Boolean(existing.devBypass ?? demoEnabled),
+          swapTaxBps: Number.isFinite(swapTax) ? Math.max(0, Math.floor(swapTax)) : 300,
+          minSwapAmount: Number.isFinite(minSwap) ? Math.max(1, Math.floor(minSwap)) : 1,
         };
       })();
     </script>
@@ -243,7 +241,7 @@
         </div>
       </div>
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js" integrity="sha256-ONKM0xPNW3HIjh//ZQzQpLCPOfmU52nlFqYMiEa3OcM=" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.91.7/lib/index.iife.min.js" crossorigin="anonymous"></script>
     <script src="game.js"></script>
     <script src="wallet-gate.js"></script>
