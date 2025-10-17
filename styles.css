@@ -143,6 +143,95 @@ canvas {
   margin-top: 12px;
 }
 
+.wallet-gate__devtools {
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(11, 17, 26, 0.55);
+  text-align: left;
+  color: #c3d6f1;
+  font-size: clamp(11px, 1.5vw, 13px);
+}
+
+.wallet-gate__devtoggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+.wallet-gate__devtoggle input {
+  width: 18px;
+  height: 18px;
+}
+
+.wallet-gate__devpanel {
+  margin-top: 6px;
+  border-radius: 10px;
+  background: rgba(9, 14, 20, 0.65);
+  padding: 10px 12px;
+  color: #d5e1f3;
+}
+
+.wallet-gate__devpanel summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #9fe8a3;
+  margin-bottom: 8px;
+}
+
+.wallet-gate__devpanel-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.wallet-gate__devpanel-row label {
+  font-size: 0.85em;
+  color: #9bb7d0;
+}
+
+.wallet-gate__devpanel-row select,
+.wallet-gate__devpanel-row input {
+  background: rgba(6, 12, 18, 0.9);
+  border: 1px solid rgba(111, 208, 197, 0.45);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #f8f5e7;
+  font-size: 0.9em;
+}
+
+.wallet-gate__devpanel-actions {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.wallet-gate__devpanel-actions button {
+  flex: 1;
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 0.85em;
+  cursor: pointer;
+  background: linear-gradient(135deg, #6fd0c5 0%, #4a9c92 100%);
+  color: #061018;
+}
+
+.wallet-gate__devpanel-actions button:nth-child(2) {
+  background: rgba(111, 208, 197, 0.22);
+  color: #9fe8a3;
+  border: 1px solid rgba(111, 208, 197, 0.4);
+}
+
+.wallet-gate__devpanel-note {
+  font-size: 0.75em;
+  color: #89a1bb;
+  margin: 0;
+}
+
 .wallet-gate__cluster {
   font-size: clamp(11px, 1.4vw, 13px);
   margin: 6px 0 0;
