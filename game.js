@@ -8,6 +8,96 @@
   const PLAYER_SPEED = 130;
   const HOLDER_DISCOUNT = 0.9;
 
+  const bootSpinnerEl = document.getElementById('boot-spinner');
+  const fatalOverlayEl = document.getElementById('fatal-overlay');
+  const fatalMessageEl = document.getElementById('fatal-overlay-message');
+  const fatalReloadButton = document.getElementById('fatal-overlay-reload');
+  const fatalDismissButton = document.getElementById('fatal-overlay-dismiss');
+
+  let fatalOverlayVisible = false;
+
+  function hideBootSpinner(source = 'unknown') {
+    if (!bootSpinnerEl) {
+      return;
+    }
+    if (!bootSpinnerEl.hasAttribute('hidden')) {
+      bootSpinnerEl.setAttribute('hidden', '');
+      console.debug('[GRMC] Boot spinner hidden via %s', source);
+    }
+  }
+
+  function stringifyError(error) {
+    if (!error) {
+      return 'Unknown error occurred.';
+    }
+    if (typeof error === 'string') {
+      return error;
+    }
+    if (error instanceof Error) {
+      return error.stack || `${error.name}: ${error.message}`;
+    }
+    try {
+      return JSON.stringify(error, null, 2);
+    } catch (jsonError) {
+      return String(error);
+    }
+  }
+
+  function showFatalError(error) {
+    console.error('[GRMC] Fatal runtime error:', error);
+    hideBootSpinner('fatal-error');
+    if (!fatalOverlayEl || !fatalMessageEl) {
+      return;
+    }
+    fatalOverlayEl.removeAttribute('hidden');
+    fatalMessageEl.textContent = stringifyError(error);
+    fatalOverlayVisible = true;
+    try {
+      fatalOverlayEl.focus({ preventScroll: true });
+    } catch (focusError) {
+      fatalMessageEl.focus();
+    }
+  }
+
+  function dismissFatalOverlay() {
+    if (!fatalOverlayEl) {
+      return;
+    }
+    fatalOverlayEl.setAttribute('hidden', '');
+    fatalOverlayVisible = false;
+  }
+
+  fatalReloadButton?.addEventListener('click', () => {
+    window.location.reload();
+  });
+
+  fatalDismissButton?.addEventListener('click', () => {
+    dismissFatalOverlay();
+  });
+
+  window.hideBootSpinner = hideBootSpinner;
+  window.showFatalError = showFatalError;
+
+  window.addEventListener('error', (event) => {
+    if (!event) {
+      return;
+    }
+    if (fatalOverlayVisible) {
+      return;
+    }
+    showFatalError(event.error || event.message || event);
+  });
+
+  window.addEventListener('unhandledrejection', (event) => {
+    if (!event) {
+      return;
+    }
+    if (fatalOverlayVisible) {
+      return;
+    }
+    showFatalError(event.reason || event);
+  });
+
   const STORAGE_KEYS = {
     cosmeticsOwned: 'grmc_cosmetics_owned_v1',
     cosmeticsEquipped: 'grmc_cosmetics_equipped_v1',
@@ -2682,6 +2772,9 @@
     }
 
     create() {
+      if (typeof window.hideBootSpinner === 'function') {
+        window.hideBootSpinner('BootScene.create');
+      }
       this.scene.start('TitleScene');
     }
   }
@@ -2727,6 +2820,9 @@
     }
 
     create() {
+      if (typeof window.hideBootSpinner === 'function') {
+        window.hideBootSpinner('GameScene.create');
+      }
       this.levelDuration = this.levelConfig.duration;
       this.levelTimeRemaining = this.levelDuration;
       this.score = 0;
