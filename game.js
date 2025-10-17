@@ -110,6 +110,41 @@
     cluster: getConfiguredCluster(),
   };
 
+  function ensureDemoDefaults() {
+    if (!window.GRMC_GATE_CONFIG?.devBypass) {
+      return;
+    }
+    if (ensureDemoDefaults.initialized) {
+      currencyStore.chefcoins = Math.max(currencyStore.chefcoins, window.GRMCState?.chefcoins || 0);
+      if (Number.isFinite(window.GRMCState?.lastBalanceCheck?.totalBalance)) {
+        currencyStore.grmcBalance = Math.max(
+          currencyStore.grmcBalance,
+          window.GRMCState.lastBalanceCheck.totalBalance,
+        );
+      }
+      return;
+    }
+    ensureDemoDefaults.initialized = true;
+    window.GRMCState = window.GRMCState || {};
+    window.GRMCState.sessionJwt = window.GRMCState.sessionJwt || 'dev';
+    window.GRMCState.chefcoins = window.GRMCState.chefcoins || 250000;
+    if (!window.GRMCState.publicKey) {
+      window.GRMCState.publicKey = 'DemoWallet1111111111111111111111111111111111';
+    }
+    currencyStore.chefcoins = Math.max(currencyStore.chefcoins, window.GRMCState.chefcoins);
+    if (Number.isFinite(window.GRMCState?.lastBalanceCheck?.totalBalance)) {
+      currencyStore.grmcBalance = Math.max(
+        currencyStore.grmcBalance,
+        window.GRMCState.lastBalanceCheck.totalBalance,
+      );
+    } else {
+      currencyStore.grmcBalance = Math.max(currencyStore.grmcBalance, 1000);
+    }
+    console.info('[GRMC] Demo bypass active. Using synthetic balances for testing.');
+  }
+
+  ensureDemoDefaults();
+
   function getSwapConfig() {
     const swapTaxBps = currencyStore.swapTaxBps || 0;
     const minSwapAmount = Math.max(1, currencyStore.minSwapAmount || 1);
@@ -125,6 +160,10 @@
   }
 
   async function fetchChefcoinBalance({ silent = false } = {}) {
+    if (window.GRMC_GATE_CONFIG?.devBypass) {
+      currencyStore.chefcoins = window.GRMCState?.chefcoins || currencyStore.chefcoins || 0;
+      return currencyStore.chefcoins;
+    }
     if (!API_BASE || !window.GRMCState?.sessionJwt) {
       currencyStore.chefcoins = window.GRMCState?.chefcoins || 0;
       return currencyStore.chefcoins;
@@ -172,6 +211,12 @@
     const normalized = Math.max(0, Math.floor(Number(amount) || 0));
     if (!normalized) {
       return null;
+    }
+    if (window.GRMC_GATE_CONFIG?.devBypass) {
+      currencyStore.chefcoins += normalized;
+      window.GRMCState.chefcoins = currencyStore.chefcoins;
+      window.emitWalletEvent?.('chefcoins-update', { chefcoins: currencyStore.chefcoins });
+      return { chefcoins: currencyStore.chefcoins };
     }
     if (!API_BASE || !window.GRMCState?.sessionJwt) {
       currencyStore.chefcoins += normalized;
@@ -969,6 +1014,10 @@
 
   async function transferGrmcToDev(amountUi) {
     ensureGlobalState();
+    if (window.GRMC_GATE_CONFIG?.devBypass) {
+      console.info('[GRMC] Demo mode active — skipping GRMC transfer to dev wallet.');
+      return `demo-${Date.now()}`;
+    }
     if (!API_BASE) {
       throw new Error('Backend API not configured.');
     }
@@ -1039,6 +1088,11 @@
 
     if (!Number.isFinite(normalizedPrice) || normalizedPrice <= 0) {
       console.warn('[GRMC] Invalid purchase price for', itemId, price);
+      return applyPurchaseLocally(itemId, metadata);
+    }
+
+    if (window.GRMC_GATE_CONFIG?.devBypass) {
+      console.info('[GRMC] Demo mode purchase applied locally for', itemId);
       return applyPurchaseLocally(itemId, metadata);
     }
 
@@ -1187,6 +1241,7 @@
   }
 
   function updateCurrencyView() {
+    ensureDemoDefaults();
     const address = currencyStore.walletAddress || window.GRMCState?.publicKey || null;
     if (currencyUI.walletAddress) {
       const label = address ? shortenAddress(address, 5) : 'Not connected';
@@ -1279,23 +1334,36 @@
       };
 
       addEntry('Cluster', diagnostics.cluster);
-      addEntry('RPC', diagnostics.rpcEndpoint);
+      addEntry('RPC', diagnostics.rpcEndpoint || diagnostics.rpc);
       addEntry('Mint', diagnostics.mint);
-      if (diagnostics.programUsed && diagnostics.programUsed !== 'none') {
-        addEntry('Program scanned', diagnostics.programUsed);
+      const programScanned = diagnostics.programUsed || diagnostics.tokenProgramFound;
+      if (programScanned && programScanned !== 'none') {
+        addEntry('Program scanned', programScanned);
       }
       if (typeof diagnostics.decimals === 'number') {
         addEntry('Mint decimals', diagnostics.decimals);
       }
       addEntry('Raw balance', diagnostics.raw);
+      if (typeof diagnostics.legacyAccounts === 'number') {
+        addEntry('Legacy accounts', diagnostics.legacyAccounts);
+      }
+      if (typeof diagnostics.token2022Accounts === 'number') {
+        addEntry('Token-2022 accounts', diagnostics.token2022Accounts);
+      }
       if (diagnostics.legacyError) {
         addEntry('Legacy token RPC', diagnostics.legacyError);
       }
       if (diagnostics.token2022Error) {
         addEntry('Token-2022 RPC', diagnostics.token2022Error);
       }
-      if (diagnostics.error && !diagnostics.legacyError && !diagnostics.token2022Error) {
+      if (diagnostics.error) {
         addEntry('Last error', diagnostics.error);
+      }
+      if (diagnostics.tip) {
+        addEntry('Tip', diagnostics.tip);
+      }
+      if (diagnostics.bypass) {
+        addEntry('Demo mode', 'Active');
       }
 
       const configuredCluster = currencyStore.cluster;

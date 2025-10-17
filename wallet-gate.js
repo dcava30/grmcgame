@@ -7,6 +7,12 @@
   const startButton = document.getElementById('start-game-button');
   const trialButton = document.getElementById('trial-game-button');
   const clusterIndicator = document.getElementById('wallet-cluster-indicator');
+  const demoCheckbox = document.getElementById('wallet-demo-checkbox');
+  const devSettingsPanel = document.getElementById('wallet-dev-settings');
+  const clusterSelect = document.getElementById('wallet-cluster-select');
+  const rpcInput = document.getElementById('wallet-rpc-input');
+  const rpcSaveButton = document.getElementById('wallet-save-rpc');
+  const rpcResetButton = document.getElementById('wallet-reset-rpc');
 
   const startButtonDefaultLabel = startButton?.textContent?.trim?.() || 'Enter Full Kitchen';
 
@@ -35,9 +41,15 @@
     diagnostics: null,
     onchainGrmc: 0,
     onchainGrmcRaw: '0',
+    devBypass: false,
   };
 
   window.GRMCState = { ...initialState, ...(window.GRMCState || {}) };
+
+  const STORAGE_KEYS = {
+    cluster: 'GRMC_SOL_CLUSTER',
+    rpcEndpoint: 'GRMC_RPC_ENDPOINT',
+  };
 
   const defaultConfig = {
     mintAddress: '',
@@ -49,10 +61,14 @@
     devWalletAddress: '9Ctm5fCGoLrdXVZAkdKNBZnkf3YF5qD4Ejjdge4cmaWX',
     swapTaxBps: 300,
     minSwapAmount: 1,
+    devBypass: false,
   };
 
   const config = { ...defaultConfig, ...(window.GRMC_GATE_CONFIG || {}) };
 
+  config.rpcEndpoint = typeof config.rpcEndpoint === 'string' && config.rpcEndpoint.trim()
+    ? config.rpcEndpoint.trim()
+    : defaultConfig.rpcEndpoint;
   config.devWalletAddress = typeof config.devWalletAddress === 'string' && config.devWalletAddress
     ? config.devWalletAddress
     : defaultConfig.devWalletAddress;
@@ -60,6 +76,7 @@
     ? config.cluster.trim()
     : inferClusterFromEndpoint(config.rpcEndpoint);
   config.cluster = normalizedCluster;
+  config.devBypass = Boolean(config.devBypass);
   const parsedSwapBps = Number(config.swapTaxBps);
   config.swapTaxBps = Number.isFinite(parsedSwapBps) ? Math.max(0, Math.floor(parsedSwapBps)) : defaultConfig.swapTaxBps;
   const parsedMinSwap = Number(config.minSwapAmount);
@@ -72,12 +89,17 @@
     token2022: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
   };
 
+  const DEMO_PUBLIC_KEY = 'DemoWallet1111111111111111111111111111111111';
+  const DEMO_BALANCE = 1_000_000;
+  const DEMO_CHEFCOINS = 250_000;
+
   function applyStaticState() {
     window.GRMCState.swapTaxBps = config.swapTaxBps;
     window.GRMCState.minSwapAmount = config.minSwapAmount;
     window.GRMCState.devWalletAddress = config.devWalletAddress;
     window.GRMCState.cluster = config.cluster;
     window.GRMCState.rpcEndpoint = config.rpcEndpoint;
+    window.GRMCState.devBypass = Boolean(config.devBypass);
     window.GRMCState.restrictedAccess = Boolean(window.GRMCState.restrictedAccess);
   }
 
@@ -149,6 +171,88 @@
     const text = clusterLabel ? `Cluster: ${clusterLabel}` : '';
     clusterIndicator.textContent = text;
     clusterIndicator.hidden = !text;
+  }
+
+  function setupDevControls() {
+    if (typeof window === 'undefined' || typeof localStorage === 'undefined') {
+      return;
+    }
+    if (demoCheckbox) {
+      demoCheckbox.checked = Boolean(config.devBypass);
+      demoCheckbox.addEventListener('change', () => {
+        const url = new URL(window.location.href);
+        if (demoCheckbox.checked) {
+          url.searchParams.set('demo', '1');
+        } else {
+          url.searchParams.delete('demo');
+          url.searchParams.delete('demoMode');
+        }
+        window.location.href = url.toString();
+      });
+    }
+
+    if (clusterSelect) {
+      const desiredCluster = config.cluster || inferClusterFromEndpoint(config.rpcEndpoint);
+      const options = Array.from(clusterSelect.options || []);
+      if (!options.some((option) => option.value === desiredCluster)) {
+        const option = document.createElement('option');
+        option.value = desiredCluster;
+        option.textContent = desiredCluster;
+        clusterSelect.appendChild(option);
+      }
+      clusterSelect.value = desiredCluster;
+      clusterSelect.addEventListener('change', (event) => {
+        const value = event.target.value;
+        try {
+          if (value === 'custom') {
+            const current = localStorage.getItem(STORAGE_KEYS.cluster) || desiredCluster;
+            const manual = window.prompt('Enter custom cluster label', current || 'mainnet-beta');
+            if (manual && manual.trim()) {
+              localStorage.setItem(STORAGE_KEYS.cluster, manual.trim());
+            } else {
+              localStorage.removeItem(STORAGE_KEYS.cluster);
+            }
+          } else {
+            localStorage.setItem(STORAGE_KEYS.cluster, value);
+          }
+        } catch (error) {
+          console.warn('[GRMC Gate] Unable to persist cluster selection:', error);
+        }
+        window.location.reload();
+      });
+    }
+
+    if (rpcInput) {
+      rpcInput.value = config.rpcEndpoint || '';
+    }
+
+    if (rpcSaveButton) {
+      rpcSaveButton.addEventListener('click', () => {
+        const value = (rpcInput?.value || '').trim();
+        try {
+          if (value) {
+            localStorage.setItem(STORAGE_KEYS.rpcEndpoint, value);
+          } else {
+            localStorage.removeItem(STORAGE_KEYS.rpcEndpoint);
+          }
+        } catch (error) {
+          console.warn('[GRMC Gate] Unable to persist RPC endpoint:', error);
+        }
+        window.location.reload();
+      });
+    }
+
+    if (rpcResetButton) {
+      rpcResetButton.addEventListener('click', () => {
+        try {
+          localStorage.removeItem(STORAGE_KEYS.rpcEndpoint);
+          localStorage.removeItem('RPC_ENDPOINT');
+        } catch (error) {
+          console.warn('[GRMC Gate] Unable to clear RPC endpoint overrides:', error);
+        }
+        window.location.reload();
+      });
+    }
   }
 
   function escapeHtml(value) {
@@ -305,10 +409,44 @@
     overlay.hidden = true;
   }
 
+  function launchGameScene({ directGame = false } = {}) {
+    hideOverlay();
+    const createInstance = window.BlockyKitchenGame?.create;
+    if (typeof createInstance !== 'function') {
+      console.warn('[GRMC Gate] Game instance factory not ready.');
+      return;
+    }
+    const instance = createInstance();
+    if (!instance?.scene) {
+      console.warn('[GRMC Gate] Game scene manager unavailable.');
+      return;
+    }
+    const preferGame = directGame && instance.scene.keys?.GameScene;
+    const targetScene = preferGame
+      ? 'GameScene'
+      : instance.scene.keys?.TitleScene
+        ? 'TitleScene'
+        : instance.scene.keys?.BootScene
+          ? 'BootScene'
+          : null;
+    if (!targetScene) {
+      console.warn('[GRMC Gate] Unable to determine target scene.');
+      return;
+    }
+    setTimeout(() => {
+      try {
+        instance.scene.start(targetScene);
+      } catch (error) {
+        console.error('[GRMC Gate] Failed to start Phaser scene:', error);
+      }
+    }, 0);
+  }
+
   function applyAccessStyles() {
     document.body.classList.toggle('holder-mode', Boolean(window.GRMCState.isHolder));
     document.body.classList.toggle('trial-mode', Boolean(window.GRMCState.trialMode));
     document.body.classList.toggle('restricted-mode', Boolean(window.GRMCState.restrictedAccess));
+    document.body.classList.toggle('demo-mode', Boolean(window.GRMCState.devBypass));
   }
 
   function buildMissingTokenMessage() {
@@ -354,8 +492,7 @@
 
   function showPlayReadyState(publicKey) {
     if (!startButton) {
-      hideOverlay();
-      window.BlockyKitchenGame?.create();
+      launchGameScene();
       return;
     }
 
@@ -433,7 +570,10 @@
 
   function resetGateMessaging() {
     hasVerifiedToken = false;
-    setStatus('A GRMC balance check is required before full access begins.');
+    const baselineMessage = config.devBypass
+      ? 'Demo mode active. Full access is unlocked without wallet verification.'
+      : 'A GRMC balance check is required before full access begins.';
+    setStatus(baselineMessage);
     showError('');
     toggleLoading(false);
     connectButton.hidden = false;
@@ -454,6 +594,7 @@
     window.GRMCState.onchainGrmc = 0;
     window.GRMCState.onchainGrmcRaw = '0';
     window.GRMCState.diagnostics = null;
+    window.GRMCState.devBypass = Boolean(config.devBypass);
     updateClusterIndicator();
   }
 
@@ -589,47 +730,113 @@
       mint: config.mintAddress,
     };
 
-    try {
-      if (!ensureWeb3Ready()) {
-        const diagnostics = { ...baseDiagnostics, error: 'Solana web3 unavailable' };
-        const state = {
-          totalBalance: 0,
-          foundAccounts: false,
-          meetsRequirement: false,
-          timestamp: Date.now(),
-          accountCount: 0,
-          diagnostics,
-        };
-        window.GRMCState.lastBalanceCheck = state;
-        window.GRMCState.onchainGrmc = 0;
-        window.GRMCState.onchainGrmcRaw = '0';
-        window.GRMCState.diagnostics = diagnostics;
-        if (emitEvents) {
-          window.emitWalletEvent('balance-update', {
-            totalBalance: 0,
-            formattedBalance: '0',
-            meetsRequirement: false,
-            source: 'grmc',
-            diagnostics,
-          });
-          window.emitWalletEvent('grmc-balance', {
-            totalBalance: 0,
-            meetsRequirement: false,
-            accountCount: 0,
-            diagnostics,
-          });
-          window.emitWalletEvent('grmc-balance-diagnostics', { diagnostics });
-        }
-        return state;
+    const updateStateAndEmit = (inputState) => {
+      const normalized = {
+        totalBalance: Number.isFinite(inputState?.totalBalance) ? inputState.totalBalance : 0,
+        foundAccounts: Boolean(inputState?.foundAccounts),
+        meetsRequirement: Boolean(inputState?.meetsRequirement),
+        timestamp: inputState?.timestamp || Date.now(),
+        accountCount: Number.isFinite(inputState?.accountCount) ? inputState.accountCount : 0,
+        rawBalance:
+          typeof inputState?.rawBalance === 'string'
+            ? inputState.rawBalance
+            : String(inputState?.rawBalance ?? '0'),
+        diagnostics: { ...baseDiagnostics, ...(inputState?.diagnostics || {}) },
+        error: inputState?.error,
+      };
+
+      window.GRMCState.lastBalanceCheck = normalized;
+      window.GRMCState.onchainGrmc = normalized.totalBalance;
+      window.GRMCState.onchainGrmcRaw = normalized.rawBalance;
+      window.GRMCState.diagnostics = normalized.diagnostics;
+
+      if (emitEvents) {
+        const formattedBalance = Number.isFinite(normalized.totalBalance)
+          ? normalized.totalBalance.toLocaleString('en-US', { maximumFractionDigits: 6 })
+          : '0';
+        window.emitWalletEvent('balance-update', {
+          totalBalance: normalized.totalBalance,
+          formattedBalance,
+          meetsRequirement: normalized.meetsRequirement,
+          source: 'grmc',
+          rawBalance: normalized.rawBalance,
+          diagnostics: normalized.diagnostics,
+        });
+        window.emitWalletEvent('grmc-balance', {
+          totalBalance: normalized.totalBalance,
+          meetsRequirement: normalized.meetsRequirement,
+          accountCount: normalized.accountCount,
+          rawBalance: normalized.rawBalance,
+          programUsed: normalized.diagnostics?.programUsed,
+          diagnostics: normalized.diagnostics,
+        });
+        window.emitWalletEvent('grmc-balance-diagnostics', { diagnostics: normalized.diagnostics });
+        window.emitWalletEvent('grmc-balance-update', {
+          ui: normalized.totalBalance,
+          raw: normalized.rawBalance,
+          program: normalized.diagnostics?.programUsed,
+          diagnostics: normalized.diagnostics,
+        });
       }
 
+      return normalized;
+    };
+
+    if (config.devBypass) {
+      const fakeBalance = Math.max(Number(config.minTokenBalance) || 1, 1) * 1000;
+      const diagnostics = {
+        ...baseDiagnostics,
+        programUsed: 'bypass',
+        tokenProgramFound: 'bypass',
+        decimals: 0,
+        raw: String(fakeBalance),
+        bypass: true,
+        note: 'Demo bypass active (no RPC check performed).',
+      };
+      const state = {
+        totalBalance: fakeBalance,
+        foundAccounts: true,
+        meetsRequirement: true,
+        accountCount: 1,
+        rawBalance: diagnostics.raw,
+        diagnostics,
+      };
+      console.info('[GRMC Gate] Demo bypass providing synthetic GRMC balance.', diagnostics);
+      return updateStateAndEmit(state);
+    }
+
+    if (!ensureWeb3Ready()) {
+      const diagnostics = { ...baseDiagnostics, error: 'Solana web3 unavailable' };
+      const state = {
+        totalBalance: 0,
+        foundAccounts: false,
+        meetsRequirement: false,
+        accountCount: 0,
+        rawBalance: '0',
+        diagnostics,
+        error: diagnostics.error,
+      };
+      return updateStateAndEmit(state);
+    }
+
+    try {
       const connection = getConnection();
       if (!connection) {
         throw new Error('Solana RPC unavailable');
       }
 
+      if (!publicKeyString) {
+        throw new Error('Wallet public key missing');
+      }
+
       const { PublicKey } = solanaWeb3;
-      const owner = new PublicKey(publicKeyString);
+      let owner;
+      try {
+        owner = new PublicKey(publicKeyString);
+      } catch (error) {
+        throw new Error('Invalid wallet public key');
+      }
+
       const mintKey = getMintPublicKey();
       if (!mintKey) {
         throw new Error('GRMC mint not configured');
@@ -639,126 +846,113 @@
       const minimumBalance = Number.isFinite(configuredMinimum) ? configuredMinimum : 1;
       const fetchConfig = { encoding: 'jsonParsed', commitment: config.commitment || 'confirmed' };
       const decimals = await fetchMintDecimals(connection, mintKey);
-      const mintBase58 = mintKey.toBase58();
-
-      const diagnostics = {
-        ...baseDiagnostics,
-        commitment: fetchConfig.commitment,
-        decimals,
-        raw: '0',
-        programUsed: 'none',
-        steps: [],
-      };
-
       const legacyProgramId = new PublicKey(TOKEN_PROGRAM_IDS.legacy);
       const token2022ProgramId = new PublicKey(TOKEN_PROGRAM_IDS.token2022);
-
       const seenAccounts = new Set();
-      let totalRaw = 0n;
-      let detectedProgram = 'none';
 
-      const summarizeAccounts = (accounts, programLabel) => {
-        let matched = 0;
-        let rawSum = 0n;
-        accounts.forEach((account) => {
-          const info = account?.account?.data?.parsed?.info;
-          if (!info || info.mint !== mintBase58) {
-            return;
-          }
-          const address = typeof account?.pubkey === 'string'
-            ? account.pubkey
-            : account?.pubkey?.toBase58?.();
-          if (!address) {
-            return;
-          }
+      const summarizeAccounts = (accounts) => {
+        let raw = 0n;
+        const accountKeys = [];
+        accounts.forEach((entry) => {
+          const info = entry?.account?.data?.parsed?.info;
           const amountStr = info?.tokenAmount?.amount ?? info?.tokenAmount?.tokenAmount?.amount ?? '0';
-          const rawAmount = safeBigInt(amountStr);
-          rawSum += rawAmount;
-          if (!seenAccounts.has(address)) {
-            seenAccounts.add(address);
-            totalRaw += rawAmount;
+          try {
+            raw += BigInt(amountStr);
+          } catch (error) {
+            console.warn('[GRMC Gate] Unable to parse token amount for account', error);
           }
-          matched += 1;
-          const ownerProgram = account?.account?.owner;
-          if (ownerProgram === legacyProgramId.toBase58()) {
-            detectedProgram = 'token';
-          } else if (ownerProgram === token2022ProgramId.toBase58()) {
-            detectedProgram = 'token-2022';
-          } else if (programLabel && detectedProgram === 'none') {
-            detectedProgram = programLabel;
+          const address =
+            typeof entry?.pubkey === 'string'
+              ? entry.pubkey
+              : entry?.pubkey?.toBase58?.();
+          if (address) {
+            accountKeys.push(address);
+            seenAccounts.add(address);
           }
         });
-        return { accounts: accounts.length, matched, raw: rawSum.toString() };
+        return { raw, accountKeys };
       };
 
-      const fetchVariant = async (label, filter, programLabel) => {
+      const fetchAccounts = async (programId, label) => {
         try {
-          const response = await connection.getTokenAccountsByOwner(owner, filter, fetchConfig);
+          const response = await connection.getTokenAccountsByOwner(
+            owner,
+            { mint: mintKey, programId },
+            fetchConfig,
+          );
           const accounts = Array.isArray(response?.value) ? response.value : [];
-          const summary = summarizeAccounts(accounts, programLabel);
-          diagnostics.steps.push({ label, program: programLabel, ...summary });
-          return summary;
+          const summary = summarizeAccounts(accounts);
+          return {
+            raw: summary.raw,
+            accounts: accounts.length,
+            accountKeys: summary.accountKeys,
+          };
         } catch (error) {
-          const message = error?.message || String(error);
-          diagnostics.steps.push({ label, program: programLabel, error: message });
-          if (programLabel === 'token') {
-            diagnostics.legacyError = message;
-          } else if (programLabel === 'token-2022') {
-            diagnostics.token2022Error = message;
-          }
-          return { accounts: 0, matched: 0, raw: '0' };
+          console.warn(`[GRMC Gate] ${label} balance fetch failed:`, error);
+          return { raw: 0n, accounts: 0, accountKeys: [], error };
         }
       };
 
-      await fetchVariant('mint', { mint: mintKey }, 'mint');
-      await fetchVariant('token-program', { programId: legacyProgramId }, 'token');
-      await fetchVariant('token-2022', { programId: token2022ProgramId }, 'token-2022');
+      const [legacyResult, token2022Result] = await Promise.all([
+        fetchAccounts(legacyProgramId, 'Legacy SPL Token'),
+        fetchAccounts(token2022ProgramId, 'Token-2022'),
+      ]);
 
-      diagnostics.programUsed = detectedProgram;
-      diagnostics.raw = totalRaw.toString();
+      const rawTotal = legacyResult.raw + token2022Result.raw;
+      const totalBalance = rawToNumber(rawTotal, decimals);
+      const tokenProgramFound = (() => {
+        if (legacyResult.raw > 0n && token2022Result.raw > 0n) return 'mixed';
+        if (legacyResult.raw > 0n) return 'token';
+        if (token2022Result.raw > 0n) return 'token-2022';
+        if (legacyResult.accounts > 0) return 'token';
+        if (token2022Result.accounts > 0) return 'token-2022';
+        return 'none';
+      })();
 
-      const totalBalance = rawToNumber(totalRaw, decimals);
-      const meetsRequirement = Number.isFinite(totalBalance) ? totalBalance >= minimumBalance : false;
+      const diagnostics = {
+        ...baseDiagnostics,
+        decimals,
+        raw: rawTotal.toString(),
+        legacyRaw: legacyResult.raw.toString(),
+        token2022Raw: token2022Result.raw.toString(),
+        legacyAccounts: legacyResult.accounts,
+        token2022Accounts: token2022Result.accounts,
+        programUsed: tokenProgramFound,
+        tokenProgramFound,
+        legacyError: legacyResult.error ? legacyResult.error.message || String(legacyResult.error) : undefined,
+        token2022Error: token2022Result.error ? token2022Result.error.message || String(token2022Result.error) : undefined,
+        ui: totalBalance,
+      };
+
+      if (!Number.isFinite(totalBalance) || rawTotal === 0n) {
+        diagnostics.tip = 'No GRMC detected. Confirm your wallet cluster and RPC endpoint match the token mint.';
+      }
+      if (legacyResult.error || token2022Result.error) {
+        diagnostics.error = legacyResult.error?.message || token2022Result.error?.message || diagnostics.tip;
+      }
 
       const state = {
         totalBalance,
         foundAccounts: seenAccounts.size > 0,
-        meetsRequirement,
-        timestamp: Date.now(),
+        meetsRequirement: Number.isFinite(totalBalance) ? totalBalance >= minimumBalance : false,
         accountCount: seenAccounts.size,
-        rawBalance: totalRaw.toString(),
+        rawBalance: rawTotal.toString(),
         diagnostics,
       };
 
-      window.GRMCState.lastBalanceCheck = state;
-      window.GRMCState.onchainGrmc = Number.isFinite(totalBalance) ? totalBalance : 0;
-      window.GRMCState.onchainGrmcRaw = totalRaw.toString();
-      window.GRMCState.diagnostics = diagnostics;
+      console.info('[GRMC Gate] Balance check complete', {
+        wallet: publicKeyString,
+        totalBalance,
+        program: diagnostics.programUsed,
+        cluster: diagnostics.cluster,
+        rpcEndpoint: diagnostics.rpcEndpoint,
+        legacyAccounts: legacyResult.accounts,
+        token2022Accounts: token2022Result.accounts,
+        legacyError: diagnostics.legacyError,
+        token2022Error: diagnostics.token2022Error,
+      });
 
-      if (emitEvents) {
-        const formattedBalance = Number.isFinite(totalBalance)
-          ? totalBalance.toLocaleString('en-US', { maximumFractionDigits: 6 })
-          : '0';
-        window.emitWalletEvent('balance-update', {
-          totalBalance,
-          formattedBalance,
-          meetsRequirement,
-          source: 'grmc',
-          rawBalance: totalRaw.toString(),
-          diagnostics,
-        });
-        window.emitWalletEvent('grmc-balance', {
-          totalBalance,
-          meetsRequirement,
-          accountCount: seenAccounts.size,
-          rawBalance: totalRaw.toString(),
-          programUsed: diagnostics.programUsed,
-          diagnostics,
-        });
-        window.emitWalletEvent('grmc-balance-diagnostics', { diagnostics });
-      }
-
-      return state;
+      return updateStateAndEmit(state);
     } catch (error) {
       console.error('[GRMC Gate] Balance check failed:', error);
       const diagnostics = {
@@ -769,36 +963,19 @@
         totalBalance: 0,
         foundAccounts: false,
         meetsRequirement: false,
-        timestamp: Date.now(),
         accountCount: 0,
-        error: diagnostics.error,
+        rawBalance: '0',
         diagnostics,
+        error: diagnostics.error,
       };
-
-      window.GRMCState.lastBalanceCheck = state;
-      window.GRMCState.onchainGrmc = 0;
-      window.GRMCState.onchainGrmcRaw = '0';
-      window.GRMCState.diagnostics = diagnostics;
-      if (emitEvents) {
-        window.emitWalletEvent('balance-update', {
-          totalBalance: 0,
-          formattedBalance: '0',
-          meetsRequirement: false,
-          source: 'grmc',
-          diagnostics,
-        });
-        window.emitWalletEvent('grmc-balance', {
-          totalBalance: 0,
-          meetsRequirement: false,
-          accountCount: 0,
-          diagnostics,
-        });
-        window.emitWalletEvent('grmc-balance-diagnostics', { diagnostics });
-      }
-      return state;
+      return updateStateAndEmit(state);
     }
   }
+
   async function verifyGatedToken(publicKeyString) {
+    if (config.devBypass) {
+      return true;
+    }
     const result = await updateGrmcBalance(publicKeyString, { emitEvents: true });
     if (result.error) {
       showError('Unable to verify GRMC holdings right now. Please try again later.');
@@ -850,10 +1027,32 @@
     });
   }
 
-  document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('DOMContentLoaded', async () => {
     resetGateMessaging();
     handleWalletEvents();
     provider = pickProvider();
+    setupDevControls();
+
+    if (config.devBypass) {
+      const demoPublicKey = window.GRMCState.publicKey || DEMO_PUBLIC_KEY;
+      window.GRMCState.publicKey = demoPublicKey;
+      window.GRMCState.devBypass = true;
+      window.GRMCState.sessionJwt = window.GRMCState.sessionJwt || 'dev';
+      window.GRMCState.chefcoins = window.GRMCState.chefcoins || DEMO_CHEFCOINS;
+      applyAccessStyles();
+      updateClusterIndicator();
+      await updateGrmcBalance(demoPublicKey, { emitEvents: true });
+      hasVerifiedToken = true;
+      window.emitWalletEvent('session', {
+        token: window.GRMCState.sessionJwt,
+        publicKey: demoPublicKey,
+        devBypass: true,
+      });
+      window.emitWalletEvent('chefcoins-update', { chefcoins: window.GRMCState.chefcoins });
+      setStatus('Demo mode active. Click “Enter Full Kitchen” to start.');
+      showPlayReadyState(demoPublicKey);
+      return;
+    }
 
     if (config.autoConnectTrusted === false) {
       return;
@@ -903,6 +1102,12 @@
 
   connectButton.addEventListener('click', connectWallet);
   function startFullAccess() {
+    if (config.devBypass) {
+      hasVerifiedToken = true;
+      window.GRMCState.devBypass = true;
+      window.GRMCState.sessionJwt = window.GRMCState.sessionJwt || 'dev';
+      window.GRMCState.isHolder = true;
+    }
     if (startButton?.dataset.mode === 'restricted') {
       window.GRMCState.trialMode = false;
       window.GRMCState.isHolder = false;
@@ -914,8 +1119,8 @@
         restrictedAccess: true,
         publicKey: window.GRMCState.publicKey,
       });
-      hideOverlay();
-      window.BlockyKitchenGame?.create();
+      console.warn('[GRMC Gate] Entering restricted kitchen mode.');
+      launchGameScene();
       return;
     }
 
@@ -933,8 +1138,8 @@
       restrictedAccess: false,
       publicKey: window.GRMCState.publicKey,
     });
-    hideOverlay();
-    window.BlockyKitchenGame?.create();
+    console.info('[GRMC Gate] Starting full access kitchen experience.');
+    launchGameScene();
   }
 
   function startTrial() {
@@ -945,8 +1150,8 @@
     applyAccessStyles();
     window.emitWalletEvent('access-update', { isHolder: false, trialMode: true, restrictedAccess: false });
     window.emitWalletEvent('trial-started', { trialMode: true });
-    hideOverlay();
-    window.BlockyKitchenGame?.create();
+    console.info('[GRMC Gate] Trial mode launching TitleScene.');
+    launchGameScene();
   }
 
   startButton?.addEventListener('click', startFullAccess);

@@ -31,6 +31,37 @@
         <div id="wallet-status" class="wallet-gate__status" aria-live="polite"></div>
         <p id="wallet-cluster-indicator" class="wallet-gate__cluster" aria-live="polite"></p>
         <div id="wallet-error" class="wallet-gate__error" role="alert" hidden></div>
+        <div class="wallet-gate__devtools">
+          <label class="wallet-gate__devtoggle" for="wallet-demo-checkbox">
+            <input type="checkbox" id="wallet-demo-checkbox" />
+            Enable Demo Mode (skip wallet requirement)
+          </label>
+          <details id="wallet-dev-settings" class="wallet-gate__devpanel">
+            <summary>Developer Settings</summary>
+            <div class="wallet-gate__devpanel-row">
+              <label for="wallet-cluster-select">Cluster</label>
+              <select id="wallet-cluster-select">
+                <option value="mainnet-beta">Mainnet Beta</option>
+                <option value="devnet">Devnet</option>
+                <option value="testnet">Testnet</option>
+                <option value="localnet">Localnet</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+            <div class="wallet-gate__devpanel-row">
+              <label for="wallet-rpc-input">RPC Endpoint</label>
+              <input id="wallet-rpc-input" type="url" placeholder="https://your-provider.example.com" />
+            </div>
+            <div class="wallet-gate__devpanel-actions">
+              <button type="button" id="wallet-save-rpc">Save RPC</button>
+              <button type="button" id="wallet-reset-rpc">Reset</button>
+            </div>
+            <p class="wallet-gate__devpanel-note">
+              Settings persist locally. Use a dedicated RPC (Helius, QuickNode, Alchemy, etc.) to avoid public endpoint rate
+              limits.
+            </p>
+          </details>
+        </div>
         <p class="wallet-gate__helper">
           Don’t have GRMC yet? <a href="https://raydium.io/swap/?inputMint=sol&amp;outputMint=6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK&amp;referrer=7i5775tjSXaXut3KtahGmFTEuqY6TB3dS2BgDARdRYAd" target="_blank" rel="noreferrer">Buy GRMC on Raydium</a>
           to unlock every perk instantly, or hop into the free trial first.
@@ -47,16 +78,50 @@
       clock expires.
     </div>
     <script>
-      window.GRMC_GATE_CONFIG = {
-        mintAddress: '6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK',
-        rpcEndpoint: 'https://api.mainnet-beta.solana.com',
-        cluster: 'mainnet-beta',
-        minTokenBalance: 1,
-        apiBase: 'https://api.example.com',
-        devWalletAddress: '9Ctm5fCGoLrdXVZAkdKNBZnkf3YF5qD4Ejjdge4cmaWX',
-        swapTaxBps: 300,
-        minSwapAmount: 1,
-      };
+      (function configureGrmcGate() {
+        const existing = window.GRMC_GATE_CONFIG || {};
+        const search = new URLSearchParams(window.location.search);
+        const storedRpc =
+          localStorage.getItem('GRMC_RPC_ENDPOINT') ||
+          localStorage.getItem('RPC_ENDPOINT') ||
+          existing.rpcEndpoint;
+        const storedCluster =
+          localStorage.getItem('GRMC_SOL_CLUSTER') ||
+          localStorage.getItem('SOL_CLUSTER') ||
+          existing.cluster;
+
+        const inferCluster = (endpoint) => {
+          if (!endpoint || typeof endpoint !== 'string') {
+            return 'mainnet-beta';
+          }
+          const lowered = endpoint.toLowerCase();
+          if (lowered.includes('devnet')) return 'devnet';
+          if (lowered.includes('testnet')) return 'testnet';
+          if (lowered.includes('localhost') || lowered.includes('127.0.0.1')) return 'localnet';
+          return 'mainnet-beta';
+        };
+
+        const defaultMint = '6Q7EMLd1BL15TaJ5dmXa2xBoxEU4oj3MLRQd5sCpotuK';
+        const rpcEndpoint = storedRpc || existing.rpcEndpoint || 'https://api.mainnet-beta.solana.com';
+        const cluster = storedCluster || inferCluster(rpcEndpoint);
+        const demoParam = search.has('demo') || search.get('demoMode') === '1' || search.get('demo') === '1';
+
+        window.GRMC_GATE_CONFIG = {
+          ...existing,
+          mintAddress: existing.mintAddress || defaultMint,
+          rpcEndpoint,
+          cluster,
+          minTokenBalance: existing.minTokenBalance ?? 1,
+          apiBase: existing.apiBase || 'https://api.example.com',
+          devWalletAddress:
+            typeof existing.devWalletAddress === 'string' && existing.devWalletAddress
+              ? existing.devWalletAddress
+              : '9Ctm5fCGoLrdXVZAkdKNBZnkf3YF5qD4Ejjdge4cmaWX',
+          swapTaxBps: Number.isFinite(existing.swapTaxBps) ? existing.swapTaxBps : 300,
+          minSwapAmount: Number.isFinite(existing.minSwapAmount) ? existing.minSwapAmount : 1,
+          devBypass: Boolean(existing.devBypass ?? demoParam),
+        };
+      })();
     </script>
     <div id="shop-overlay" class="grmc-overlay" role="dialog" aria-modal="true" aria-labelledby="shop-title" hidden>
       <div class="grmc-overlay__panel">
